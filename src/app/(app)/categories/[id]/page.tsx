@@ -14,8 +14,14 @@ import {
   inputClass,
   secondaryButtonClass,
 } from "@/components/ui";
-import { deleteCategory, runMoulinette, saveCategorySource } from "../../actions";
+import { deleteCategory, saveCategorySource } from "../../actions";
 import { ImportForm } from "./import-form";
+import { GenerateForm } from "./generate-form";
+import { CopyButton } from "./copy-button";
+
+// La rédaction par Claude prend nettement plus que la durée par défaut d'une
+// fonction Vercel : on demande explicitement la fenêtre maximale.
+export const maxDuration = 300;
 
 function checksFromPayload(payload: unknown): Check[] {
   if (payload && typeof payload === "object" && "checks" in payload) {
@@ -121,12 +127,7 @@ export default async function CategoryPage({
             <ScoreBadge score={latest.score} label={`v${latest.version}`} />
           </>
         )}
-        <form action={runMoulinette}>
-          <input type="hidden" name="category_id" value={category.id} />
-          <button type="submit" className={buttonClass}>
-            {latest ? "Relancer la moulinette" : "Passer à la moulinette"}
-          </button>
-        </form>
+        <GenerateForm categoryId={category.id} hasVersion={Boolean(latest)} />
       </div>
 
       <Card
@@ -250,8 +251,26 @@ export default async function CategoryPage({
           <div className="space-y-4">
             <Output label="Title" value={latest.title} />
             <Output label="Meta description" value={latest.meta_description} />
-            <Output label="H1" value={latest.h1} />
-            <Output label="Texte de catégorie" value={latest.content} />
+            <Output
+              label="H1 — à reporter sur le nom de la catégorie"
+              value={latest.h1}
+            />
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                  HTML pour le champ « description » (sans H1)
+                  {latest.content && (
+                    <span className="ml-2 font-normal text-slate-400">
+                      {latest.content.length} car.
+                    </span>
+                  )}
+                </p>
+                {latest.content && <CopyButton value={latest.content} />}
+              </div>
+              <pre className="max-h-96 overflow-auto rounded-lg bg-slate-50 px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap dark:bg-slate-950">
+                {latest.content || "—"}
+              </pre>
+            </div>
             <div className="border-t border-slate-200 pt-4 dark:border-slate-800">
               <ChecksList checks={checksFromPayload(latest.payload)} />
             </div>

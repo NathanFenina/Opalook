@@ -95,6 +95,7 @@ export type Database = {
           content: string | null;
           score: number | null;
           engine: string | null;
+          editorial_angle: string | null;
           payload: Json;
           created_by: string | null;
           created_at: string;
@@ -110,6 +111,7 @@ export type Database = {
           content?: string | null;
           score?: number | null;
           engine?: string | null;
+          editorial_angle?: string | null;
           payload?: Json;
           created_by?: string | null;
           created_at?: string;

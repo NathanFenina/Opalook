@@ -11,7 +11,7 @@ import {
   buttonClass,
   inputClass,
 } from "@/components/ui";
-import { createCategory } from "../../actions";
+import { createCategory, saveProjectBrief } from "../../actions";
 
 export default async function ProjectPage({
   params,
@@ -23,7 +23,7 @@ export default async function ProjectPage({
 
   const { data: project } = await supabase
     .from("projects")
-    .select("id, name, domain")
+    .select("id, name, domain, notes")
     .eq("id", id)
     .maybeSingle();
 
@@ -87,6 +87,37 @@ export default async function ProjectPage({
           Aucune catégorie suivie. Ajoute la première URL à passer à la moulinette.
         </EmptyState>
       )}
+
+      <Card
+        title="Brief éditorial"
+        description="Injecté tel quel dans le prompt de rédaction : audience, ton, contraintes, arguments à mettre en avant."
+      >
+        <form action={saveProjectBrief} className="space-y-4">
+          <input type="hidden" name="project_id" value={project.id} />
+          <Field label="Domaine">
+            <input
+              name="domain"
+              defaultValue={project.domain ?? ""}
+              placeholder="client-x.fr"
+              className={inputClass}
+            />
+          </Field>
+          <Field
+            label="Brief"
+            hint="Ex. : grossiste B2B, s'adresse à des revendeurs professionnels, insister sur les quantités minimales et les marges."
+          >
+            <textarea
+              name="notes"
+              rows={5}
+              defaultValue={project.notes ?? ""}
+              className={inputClass}
+            />
+          </Field>
+          <button type="submit" className={buttonClass}>
+            Enregistrer le brief
+          </button>
+        </form>
+      </Card>
 
       <Card title="Ajouter une catégorie">
         <form action={createCategory} className="space-y-4">

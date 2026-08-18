@@ -1,17 +1,10 @@
 /**
- * La moulinette : cœur métier d'Opalook.
+ * Scoring SEO d'une page catégorie.
  *
- * Prend une page catégorie e-commerce (données brutes récupérées sur le site du
- * client) et produit une version optimisée + un audit scoré.
- *
- * v0 : moteur déterministe à base de règles, sans appel LLM. Volontairement pur
- * (aucune I/O) pour rester testable et pour qu'on puisse brancher un moteur
- * `llm` à côté sans toucher aux appelants — cf. `OptimizationEngine`.
+ * Déterministe et sans I/O : les mêmes entrées donnent toujours le même score,
+ * ce qui rend les versions réellement comparables entre elles. La rédaction est
+ * assurée par `generate.ts` ; ici on ne fait que mesurer — avant comme après.
  */
-
-export type OptimizationEngine = "rules-v0";
-
-export const DEFAULT_ENGINE: OptimizationEngine = "rules-v0";
 
 /** Bornes utilisées à la fois pour générer et pour auditer. */
 export const LIMITS = {
@@ -43,16 +36,6 @@ export type MoulinetteInput = {
   brand?: string | null;
 };
 
-export type MoulinetteResult = {
-  engine: OptimizationEngine;
-  title: string;
-  metaDescription: string;
-  h1: string;
-  content: string;
-  score: number;
-  checks: Check[];
-};
-
 /* ------------------------------------------------------------------ utils */
 
 function clean(value: string | null | undefined): string {
@@ -79,78 +62,6 @@ function countOccurrences(haystack: string, keyword: string): number {
   if (!keyword) return 0;
   const escaped = normalize(keyword).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return normalize(haystack).match(new RegExp(escaped, "g"))?.length ?? 0;
-}
-
-/** Tronque sans couper un mot en deux. */
-function truncateOnWord(value: string, max: number): string {
-  if (value.length <= max) return value;
-  const cut = value.slice(0, max);
-  const lastSpace = cut.lastIndexOf(" ");
-  return (lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd();
-}
-
-function capitalize(value: string): string {
-  return value.charAt(0).toUpperCase() + value.slice(1);
-}
-
-/* ------------------------------------------------------------- génération */
-
-function buildTitle(keyword: string, name: string, brand: string): string {
-  const base = capitalize(keyword || name);
-  const candidates = [
-    brand ? `${base} : notre sélection au meilleur prix | ${brand}` : "",
-    `${base} : notre sélection au meilleur prix`,
-    brand ? `${base} | ${brand}` : "",
-    base,
-  ].filter(Boolean);
-
-  const fitting = candidates.find((c) => c.length <= LIMITS.title.max);
-  return truncateOnWord(fitting ?? base, LIMITS.title.max);
-}
-
-function buildMetaDescription(keyword: string, name: string): string {
-  const base = keyword || name;
-  const meta =
-    `Découvrez notre gamme ${base} : large choix, conseils d'experts et ` +
-    `livraison rapide. Comparez les modèles et trouvez le vôtre au meilleur prix.`;
-
-  if (meta.length <= LIMITS.metaDescription.max) return meta;
-  return truncateOnWord(meta, LIMITS.metaDescription.max);
-}
-
-function buildH1(keyword: string, name: string): string {
-  const h1 = capitalize(keyword || name);
-  return truncateOnWord(h1, LIMITS.h1.max);
-}
-
-function buildContent(keyword: string, name: string, source: string): string {
-  const base = keyword || name;
-  const intro = [
-    `Vous cherchez ${base} ? Cette page rassemble notre offre complète, ` +
-      `sélectionnée pour couvrir tous les usages et tous les budgets.`,
-    `Chaque référence est présentée avec ses caractéristiques clés pour vous ` +
-      `permettre de comparer rapidement et de choisir en confiance.`,
-  ].join(" ");
-
-  const guide = [
-    `## Comment choisir ${base} ?`,
-    `Trois critères font la différence : l'usage prévu, le niveau de finition ` +
-      `attendu et le budget. Commencez par définir votre usage, puis affinez ` +
-      `avec les filtres de la page pour ne garder que les modèles pertinents.`,
-    `## Notre sélection ${base}`,
-    `Nos équipes mettent en avant les références qui offrent le meilleur ` +
-      `rapport qualité-prix, ainsi que les nouveautés de la saison.`,
-    `## Livraison, garantie et accompagnement`,
-    `Livraison suivie, retours facilités et conseillers disponibles pour vous ` +
-      `guider avant comme après l'achat.`,
-  ].join("\n\n");
-
-  const existing = clean(stripTags(source));
-  const legacy = existing
-    ? `\n\n## À retenir\n\n${truncateOnWord(existing, 600)}`
-    : "";
-
-  return `${intro}\n\n${guide}${legacy}`.trim();
 }
 
 /* ------------------------------------------------------------------ audit */
@@ -294,7 +205,7 @@ export function audit(
       id: "content-structure",
       label: "Structure Hn du texte",
       weight: 2,
-      ...(/^##\s+/m.test(parts.content)
+      ...(/^##\s+/m.test(parts.content) || /<h2[\s>]/i.test(parts.content)
         ? { status: "ok" as const, detail: "Sous-titres H2 présents." }
         : {
             status: "fail" as const,
@@ -304,33 +215,6 @@ export function audit(
   ];
 
   return { checks, score: scoreFrom(checks) };
-}
-
-/** Passe une catégorie à la moulinette. */
-export function optimize(input: MoulinetteInput): MoulinetteResult {
-  const name = clean(input.name);
-  const keyword = clean(input.targetKeyword) || name.toLowerCase();
-  const brand = clean(input.brand);
-
-  const title = buildTitle(keyword, name, brand);
-  const metaDescription = buildMetaDescription(keyword, name);
-  const h1 = buildH1(keyword, name);
-  const content = buildContent(keyword, name, input.sourceContent ?? "");
-
-  const { checks, score } = audit(
-    { title, metaDescription, h1, content },
-    keyword,
-  );
-
-  return {
-    engine: DEFAULT_ENGINE,
-    title,
-    metaDescription,
-    h1,
-    content,
-    score,
-    checks,
-  };
 }
 
 /** Score la version d'origine, pour afficher le gain apporté par la moulinette. */
