@@ -15,6 +15,7 @@ import {
   secondaryButtonClass,
 } from "@/components/ui";
 import { deleteCategory, runMoulinette, saveCategorySource } from "../../actions";
+import { ImportForm } from "./import-form";
 
 function checksFromPayload(payload: unknown): Check[] {
   if (payload && typeof payload === "object" && "checks" in payload) {
@@ -22,6 +23,18 @@ function checksFromPayload(payload: unknown): Check[] {
     if (Array.isArray(checks)) return checks as Check[];
   }
   return [];
+}
+
+type SourceData = {
+  products?: string[];
+  productCount?: number | null;
+  facets?: { name: string; values: string[] }[];
+  headings?: { level: number; text: string }[];
+  breadcrumb?: string[];
+};
+
+function sourceData(payload: unknown): SourceData {
+  return payload && typeof payload === "object" ? (payload as SourceData) : {};
 }
 
 function Output({ label, value }: { label: string; value: string | null }) {
@@ -59,6 +72,7 @@ export default async function CategoryPage({
   if (!category) notFound();
 
   const project = category.projects as { id: string; name: string } | null;
+  const source = sourceData(category.source_data);
 
   const { data: optimizations, error } = await supabase
     .from("optimizations")
@@ -114,6 +128,63 @@ export default async function CategoryPage({
           </button>
         </form>
       </div>
+
+      <Card
+        title="Récupération de la page"
+        description="Va chercher les balises, le texte, les produits et les filtres directement sur l'URL."
+      >
+        <div className="space-y-3">
+          <ImportForm categoryId={category.id} />
+          {category.source_fetched_at && (
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Dernière récupération :{" "}
+              {new Date(category.source_fetched_at).toLocaleString("fr-FR")}
+            </p>
+          )}
+        </div>
+      </Card>
+
+      {Boolean(source.products?.length || source.facets?.length) && (
+        <Card
+          title="Matière première"
+          description="Ce qui rendra le texte réellement spécifique à cette catégorie."
+        >
+          <div className="grid gap-6 sm:grid-cols-2">
+            <div className="space-y-2">
+              <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                Produits{source.productCount ? ` (${source.productCount} au total)` : ""}
+              </p>
+              <ul className="space-y-1 text-sm">
+                {(source.products ?? []).slice(0, 15).map((product) => (
+                  <li key={product} className="truncate">
+                    {product}
+                  </li>
+                ))}
+                {(source.products?.length ?? 0) > 15 && (
+                  <li className="text-xs text-slate-400">
+                    + {(source.products?.length ?? 0) - 15} autres
+                  </li>
+                )}
+              </ul>
+            </div>
+            <div className="space-y-2">
+              <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                Filtres
+              </p>
+              <ul className="space-y-2 text-sm">
+                {(source.facets ?? []).map((facet) => (
+                  <li key={facet.name}>
+                    <span className="font-medium">{facet.name}</span>{" "}
+                    <span className="text-slate-500 dark:text-slate-400">
+                      {facet.values.slice(0, 8).join(", ")}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </Card>
+      )}
 
       <Card
         title="Contenu source"

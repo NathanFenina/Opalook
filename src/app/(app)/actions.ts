@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/server";
 import { optimize } from "@/lib/moulinette";
+import { extractFromUrl, ExtractionError } from "@/lib/extract";
 
 async function requireUser() {
   const supabase = await createClient();
@@ -159,4 +160,86 @@ export async function deleteCategory(formData: FormData) {
 
   revalidatePath(`/projects/${projectId}`);
   redirect(`/projects/${projectId}`);
+}
+
+export type ImportState = {
+  status: "idle" | "ok" | "error";
+  message: string;
+  diagnostics?: string[];
+};
+
+/**
+ * Récupère la page catégorie en ligne et remplit le contenu source.
+ * Renvoie un état plutôt que de lever : le message d'échec (pare-feu, 404,
+ * sélecteur muet) est justement l'information utile à l'écran.
+ */
+export async function importFromUrl(
+  _prev: ImportState,
+  formData: FormData,
+): Promise<ImportState> {
+  const { supabase } = await requireUser();
+
+  const categoryId = text(formData, "category_id");
+  if (!categoryId) {
+    return { status: "error", message: "Catégorie manquante." };
+  }
+
+  const { data: category, error: readError } = await supabase
+    .from("categories")
+    .select("id, url")
+    .eq("id", categoryId)
+    .single();
+
+  if (readError || !category) {
+    return { status: "error", message: `Catégorie introuvable : ${readError?.message ?? ""}` };
+  }
+
+  let extraction;
+  try {
+    extraction = await extractFromUrl(category.url);
+  } catch (error) {
+    if (error instanceof ExtractionError) {
+      return { status: "error", message: error.message };
+    }
+    return { status: "error", message: (error as Error).message };
+  }
+
+  const { error: updateError } = await supabase
+    .from("categories")
+    .update({
+      source_title: extraction.title,
+      source_meta_description: extraction.metaDescription,
+      source_h1: extraction.h1,
+      source_content: extraction.seoText,
+      source_data: {
+        headings: extraction.headings,
+        breadcrumb: extraction.breadcrumb,
+        products: extraction.products,
+        productCount: extraction.productCount,
+        facets: extraction.facets,
+        canonical: extraction.canonical,
+        finalUrl: extraction.finalUrl,
+        diagnostics: extraction.diagnostics,
+      },
+      source_fetched_at: new Date().toISOString(),
+    })
+    .eq("id", categoryId);
+
+  if (updateError) {
+    return { status: "error", message: `Enregistrement impossible : ${updateError.message}` };
+  }
+
+  revalidatePath(`/categories/${categoryId}`);
+
+  const summary = [
+    extraction.products.length > 0 ? `${extraction.products.length} produits` : "aucun produit",
+    extraction.facets.length > 0 ? `${extraction.facets.length} facettes` : "aucune facette",
+    extraction.seoText ? `${extraction.seoText.length} car. de texte` : "aucun texte SEO",
+  ].join(" · ");
+
+  return {
+    status: "ok",
+    message: `Page récupérée : ${summary}.`,
+    diagnostics: extraction.diagnostics,
+  };
 }

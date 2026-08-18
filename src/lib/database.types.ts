@@ -52,6 +52,8 @@ export type Database = {
           source_meta_description: string | null;
           source_h1: string | null;
           source_content: string | null;
+          source_data: Json;
+          source_fetched_at: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -66,6 +68,8 @@ export type Database = {
           source_meta_description?: string | null;
           source_h1?: string | null;
           source_content?: string | null;
+          source_data?: Json;
+          source_fetched_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };
