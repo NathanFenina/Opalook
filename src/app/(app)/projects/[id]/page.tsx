@@ -5,7 +5,11 @@ import { createClient } from "@/lib/supabase/server";
 import { Card, EmptyState, Field, buttonClass, inputClass } from "@/components/ui";
 import { StatusSelect } from "@/components/status-select";
 import { createCategory, saveProjectBrief } from "../../actions";
-import { ImportCategoriesForm, ImportGscForm } from "./import-forms";
+import {
+  ImportCategoriesForm,
+  ImportGscForm,
+  ImportSemrushForm,
+} from "./import-forms";
 
 type PageMetrics = { clicks: number; impressions: number; position: number; opportunity: number };
 
@@ -203,6 +207,13 @@ export default async function ProjectPage({
         description="Rapproche les métriques de chaque URL et signale les cannibalisations existantes."
       >
         <ImportGscForm projectId={project.id} />
+      </Card>
+
+      <Card
+        title="Importer volumes et difficulté (Semrush)"
+        description="Rapproche chaque mot-clé principal de son volume, sa difficulté et son intention."
+      >
+        <ImportSemrushForm projectId={project.id} />
       </Card>
 
       <Card title="Ajouter une catégorie à l'unité">

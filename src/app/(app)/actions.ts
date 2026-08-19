@@ -24,6 +24,8 @@ import {
   urlKey,
   GscParseError,
 } from "@/lib/gsc";
+import { parseSemrushCsv, keywordKey, SemrushParseError } from "@/lib/semrush";
+import { fetchSerp, SerpError, type SerpAnalysis } from "@/lib/dataforseo";
 
 async function requireUser() {
   const supabase = await createClient();
@@ -169,6 +171,8 @@ export async function runMoulinette(
   };
   const gscQueries = gsc.queries ?? [];
 
+  const serp = (category.serp_data ?? {}) as Partial<SerpAnalysis>;
+
   let content;
   try {
     content = await generateCategoryContent({
@@ -182,6 +186,8 @@ export async function runMoulinette(
       fanQueries: category.fan_queries ?? [],
       categoryBrief: category.brief,
       gscQueries: gscQueries.slice(0, 25),
+      serp: serp.results ?? [],
+      ownRank: serp.ownRank ?? null,
       breadcrumb: source.breadcrumb ?? [],
       products: source.products ?? [],
       facets: source.facets ?? [],
@@ -722,4 +728,157 @@ export async function suggestKeywordsAction(
     }
     return { status: "error", message: (error as Error).message };
   }
+}
+
+/* ------------------------------------------------- import Semrush -------- */
+
+export type SemrushImportState = {
+  status: "idle" | "ok" | "error";
+  message: string;
+  unmatched?: string[];
+};
+
+export async function importSemrushData(
+  _prev: SemrushImportState,
+  formData: FormData,
+): Promise<SemrushImportState> {
+  const { supabase } = await requireUser();
+
+  const projectId = text(formData, "project_id");
+  if (!projectId) return { status: "error", message: "Projet manquant." };
+
+  const file = formData.get("file");
+  const pasted = String(formData.get("csv") ?? "").trim();
+
+  let content = pasted;
+  if (!content && file instanceof File && file.size > 0) content = await file.text();
+  if (!content) {
+    return { status: "error", message: "Dépose un fichier CSV ou colle son contenu." };
+  }
+
+  let rows;
+  try {
+    rows = parseSemrushCsv(content);
+  } catch (error) {
+    if (error instanceof SemrushParseError) {
+      return { status: "error", message: error.message };
+    }
+    return { status: "error", message: (error as Error).message };
+  }
+
+  const { data: categories, error: readError } = await supabase
+    .from("categories")
+    .select("id, target_keyword")
+    .eq("project_id", projectId)
+    .not("target_keyword", "is", null);
+
+  if (readError) {
+    return { status: "error", message: `Lecture des catégories impossible : ${readError.message}` };
+  }
+
+  const byKeyword = new Map(rows.map((row) => [keywordKey(row.keyword), row]));
+  let matched = 0;
+
+  for (const category of categories ?? []) {
+    const row = byKeyword.get(keywordKey(category.target_keyword ?? ""));
+    if (!row) continue;
+
+    const { error: updateError } = await supabase
+      .from("categories")
+      .update({
+        keyword_volume: row.volume,
+        keyword_difficulty: row.difficulty,
+        keyword_cpc: row.cpc,
+        keyword_intent: row.intent,
+        keyword_data_at: new Date().toISOString(),
+      })
+      .eq("id", category.id);
+
+    if (!updateError) matched += 1;
+  }
+
+  // Les mots-clés du fichier qui ne correspondent à aucune catégorie : presque
+  // toujours un écart de formulation, utile à voir plutôt qu'à taire.
+  const categoryKeys = new Set(
+    (categories ?? []).map((category) => keywordKey(category.target_keyword ?? "")),
+  );
+  const unmatched = rows
+    .filter((row) => !categoryKeys.has(keywordKey(row.keyword)))
+    .map((row) => row.keyword)
+    .slice(0, 20);
+
+  revalidatePath(`/projects/${projectId}`);
+
+  return {
+    status: "ok",
+    message:
+      `${rows.length} mots-clés lus, ${matched} catégorie(s) sur ${categories?.length ?? 0} mise(s) à jour.` +
+      (matched === 0
+        ? " Aucune correspondance : les mots-clés du fichier ne sont pas ceux des catégories."
+        : ""),
+    unmatched,
+  };
+}
+
+/* ---------------------------------------------------- analyse de SERP ---- */
+
+export type SerpState = {
+  status: "idle" | "ok" | "error";
+  message: string;
+};
+
+/** Relève le classement organique du mot-clé principal et l'archive. */
+export async function fetchSerpAction(
+  _prev: SerpState,
+  formData: FormData,
+): Promise<SerpState> {
+  const { supabase } = await requireUser();
+
+  const categoryId = text(formData, "category_id");
+  if (!categoryId) return { status: "error", message: "Catégorie manquante." };
+
+  const { data: category, error: readError } = await supabase
+    .from("categories")
+    .select("id, target_keyword, projects(domain)")
+    .eq("id", categoryId)
+    .single();
+
+  if (readError || !category) {
+    return { status: "error", message: `Catégorie introuvable : ${readError?.message ?? ""}` };
+  }
+
+  const keyword = (category.target_keyword ?? "").trim();
+  if (!keyword) {
+    return { status: "error", message: "Renseigne d'abord le mot-clé principal." };
+  }
+
+  const project = category.projects as { domain: string | null } | null;
+
+  let analysis;
+  try {
+    analysis = await fetchSerp(keyword, project?.domain ?? null);
+  } catch (error) {
+    if (error instanceof SerpError) return { status: "error", message: error.message };
+    return { status: "error", message: (error as Error).message };
+  }
+
+  const { error: updateError } = await supabase
+    .from("categories")
+    .update({ serp_data: analysis, serp_fetched_at: analysis.fetchedAt })
+    .eq("id", categoryId);
+
+  if (updateError) {
+    return { status: "error", message: `Enregistrement impossible : ${updateError.message}` };
+  }
+
+  revalidatePath(`/categories/${categoryId}`);
+
+  return {
+    status: "ok",
+    message:
+      `${analysis.results.length} résultats relevés. ` +
+      (analysis.ownRank
+        ? `Le site est en position ${analysis.ownRank} sur cette requête.`
+        : "Le site n'apparaît pas dans ce classement."),
+  };
 }

@@ -64,6 +64,8 @@ export type Database = {
           keyword_cpc: number | null;
           keyword_intent: string | null;
           keyword_data_at: string | null;
+          serp_data: Json;
+          serp_fetched_at: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -90,6 +92,8 @@ export type Database = {
           keyword_cpc?: number | null;
           keyword_intent?: string | null;
           keyword_data_at?: string | null;
+          serp_data?: Json;
+          serp_fetched_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };

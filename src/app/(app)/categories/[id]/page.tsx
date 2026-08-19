@@ -17,6 +17,7 @@ import { ImportForm } from "./import-form";
 import { GenerateForm } from "./generate-form";
 import { CopyButton } from "./copy-button";
 import { KeywordsForm, type GscQuery } from "./keywords-form";
+import { SerpForm } from "./serp-form";
 
 // La rédaction par Claude prend nettement plus que la durée par défaut d'une
 // fonction Vercel : on demande explicitement la fenêtre maximale.
@@ -78,6 +79,10 @@ export default async function CategoryPage({
     pageMetrics?: { clicks: number; impressions: number; position: number };
   };
   const metrics = gsc.pageMetrics;
+  const serp = (category.serp_data ?? {}) as {
+    results?: { rank: number; title: string; description: string; url: string; domain: string }[];
+    ownRank?: number | null;
+  };
 
   const { data: optimizations, error } = await supabase
     .from("optimizations")
@@ -213,6 +218,54 @@ export default async function CategoryPage({
           </div>
         </Card>
       )}
+
+      <Card
+        title="Concurrence sur le mot-clé principal"
+        description="Le classement organique relevé sur Google. Il sert de cahier des charges implicite à la rédaction : couvrir ce socle, puis s'en démarquer."
+      >
+        <div className="space-y-4">
+          <SerpForm categoryId={category.id} hasData={Boolean(serp.results?.length)} />
+
+          {serp.results && serp.results.length > 0 && (
+            <>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Relevé le{" "}
+                {category.serp_fetched_at
+                  ? new Date(category.serp_fetched_at).toLocaleString("fr-FR")
+                  : "—"}
+                {serp.ownRank
+                  ? ` · le site est en position ${serp.ownRank}`
+                  : " · le site n'apparaît pas dans ce classement"}
+              </p>
+              <ol className="space-y-3">
+                {serp.results.slice(0, 5).map((result) => (
+                  <li key={result.url} className="flex gap-3 text-sm">
+                    <span className="w-5 shrink-0 text-right font-semibold tabular-nums text-slate-400">
+                      {result.rank}
+                    </span>
+                    <span className="min-w-0">
+                      <a
+                        href={result.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-medium underline-offset-4 hover:underline"
+                      >
+                        {result.title}
+                      </a>
+                      <span className="ml-2 text-xs text-slate-400">{result.domain}</span>
+                      {result.description && (
+                        <span className="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">
+                          {result.description}
+                        </span>
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            </>
+          )}
+        </div>
+      </Card>
 
       <Card
         title="Mots-clés et brief"

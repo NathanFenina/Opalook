@@ -6,8 +6,10 @@ import { useFormStatus } from "react-dom";
 import {
   importCategories,
   importGscData,
+  importSemrushData,
   type BulkImportState,
   type GscImportState,
+  type SemrushImportState,
 } from "../../actions";
 import { buttonClass, inputClass, Field } from "@/components/ui";
 
@@ -122,6 +124,45 @@ export function ImportGscForm({ projectId }: { projectId: string }) {
               </li>
             ))}
           </ul>
+        </div>
+      )}
+    </form>
+  );
+}
+
+const SEMRUSH_INITIAL: SemrushImportState = { status: "idle", message: "" };
+
+export function ImportSemrushForm({ projectId }: { projectId: string }) {
+  const [state, formAction] = useActionState(importSemrushData, SEMRUSH_INITIAL);
+
+  return (
+    <form action={formAction} className="space-y-4">
+      <input type="hidden" name="project_id" value={projectId} />
+      <Field
+        label="Fichier CSV"
+        hint="Export Semrush (Keyword Overview, Bulk Analysis ou Keyword Magic). Colonnes reconnues : Keyword, Volume, Keyword Difficulty, CPC, Intent — en anglais comme en français, dans n'importe quel ordre."
+      >
+        <input
+          type="file"
+          name="file"
+          accept=".csv,text/csv,text/plain"
+          className={`${inputClass} file:mr-3 file:rounded file:border-0 file:bg-slate-200 file:px-3 file:py-1 file:text-xs dark:file:bg-slate-800 dark:file:text-slate-200`}
+        />
+      </Field>
+      <Field label="…ou colle le contenu CSV">
+        <textarea name="csv" rows={4} className={`${inputClass} font-mono text-xs`} />
+      </Field>
+      <Submit label="Importer volumes et difficulté" pendingLabel="Import…" />
+      <Feedback status={state.status} message={state.message} />
+
+      {state.unmatched && state.unmatched.length > 0 && (
+        <div className="space-y-1 rounded-lg bg-amber-50 px-3 py-2 text-xs dark:bg-amber-950/40">
+          <p className="font-medium text-amber-900 dark:text-amber-200">
+            Mots-clés du fichier sans catégorie correspondante
+          </p>
+          <p className="text-amber-900/80 dark:text-amber-200/80">
+            {state.unmatched.join(" · ")}
+          </p>
         </div>
       )}
     </form>

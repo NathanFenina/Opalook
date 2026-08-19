@@ -79,6 +79,10 @@ export type GenerationInput = {
   categoryBrief: string | null;
   /** Requêtes sur lesquelles l'URL est déjà positionnée, d'après GSC. */
   gscQueries: { query: string; impressions: number; position: number }[];
+  /** Top du classement organique sur le mot-clé principal. */
+  serp: { rank: number; title: string; description: string; domain: string }[];
+  /** Position du site dans ce classement, si présent. */
+  ownRank: number | null;
   breadcrumb: string[];
   products: string[];
   facets: { name: string; values: string[] }[];
@@ -129,6 +133,13 @@ POSITIONS ACQUISES
 Quand des requêtes déjà positionnées te sont fournies, renforce-les : ce sont
 des gains rapides. Une requête en position 8 à 20 mérite d'être couverte
 explicitement par une section ou une question de FAQ.
+
+CONCURRENCE
+Quand le classement organique t'est fourni, lis-le comme un cahier des charges
+implicite : ce que traitent les cinq premiers est ce que Google juge pertinent
+sur cette requête. Couvre ce socle, puis démarque-toi — apporte au moins un
+angle qu'aucun d'eux ne traite. Ne recopie jamais leurs formulations, et ne cite
+aucun concurrent nommément.
 
 STYLE
 Français naturel, phrases de longueur variable, pas de superlatifs creux ("le
@@ -186,6 +197,26 @@ ${facetLines}
 
 # Texte actuellement en ligne
 ${input.currentText ? input.currentText.slice(0, 2500) : "(aucun texte en place)"}
+
+# Classement organique actuel sur « ${input.keyword} »
+${
+    input.serp.length > 0
+      ? input.serp
+          .slice(0, 5)
+          .map(
+            (row) =>
+              `${row.rank}. [${row.domain}] ${row.title}\n   ${row.description.slice(0, 220)}`,
+          )
+          .join("\n")
+      : "(non relevé)"
+  }
+${
+    input.ownRank
+      ? `Le site est actuellement en position ${input.ownRank} sur cette requête.`
+      : input.serp.length > 0
+        ? "Le site n'apparaît pas dans ce classement."
+        : ""
+  }
 
 # Déjà pris par d'autres catégories du site — à ne PAS cibler ni imiter
 Mots-clés : ${input.takenKeywords.slice(0, 60).join(" | ") || "(aucun)"}
