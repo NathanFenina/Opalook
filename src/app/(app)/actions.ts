@@ -7,8 +7,10 @@ import { createClient } from "@/lib/supabase/server";
 import { audit } from "@/lib/moulinette";
 import {
   generateCategoryContent,
+  suggestKeywords,
   GenerationError,
   GENERATION_MODEL,
+  type KeywordSuggestion,
 } from "@/lib/generate";
 import { renderCategoryHtml, renderCategoryText } from "@/lib/render";
 import { extractFromUrl, ExtractionError } from "@/lib/extract";
@@ -86,29 +88,6 @@ export async function createCategory(formData: FormData) {
   }
 
   revalidatePath(`/projects/${projectId}`);
-}
-
-export async function saveCategorySource(formData: FormData) {
-  const { supabase } = await requireUser();
-
-  const categoryId = text(formData, "category_id");
-  if (!categoryId) return;
-
-  const { error } = await supabase
-    .from("categories")
-    .update({
-      source_title: optionalText(formData, "source_title"),
-      source_meta_description: optionalText(formData, "source_meta_description"),
-      source_h1: optionalText(formData, "source_h1"),
-      source_content: optionalText(formData, "source_content"),
-    })
-    .eq("id", categoryId);
-
-  // Ce formulaire ne touche plus aucune colonne sous contrainte d'unicité :
-  // le mot-clé se règle dans le bloc « Mots-clés et brief ».
-  if (error) throw new Error(`Enregistrement impossible : ${error.message}`);
-
-  revalidatePath(`/categories/${categoryId}`);
 }
 
 export type GenerationState = {
@@ -640,4 +619,107 @@ export async function saveCategoryKeywords(formData: FormData) {
   }
 
   revalidatePath(`/categories/${categoryId}`);
+}
+
+/* ------------------------------------------------------------- statut ---- */
+
+const STATUSES = ["todo", "in_progress", "optimized", "published"] as const;
+
+export async function setCategoryStatus(formData: FormData) {
+  const { supabase } = await requireUser();
+
+  const categoryId = text(formData, "category_id");
+  const status = text(formData, "status");
+  if (!categoryId) return;
+  if (!STATUSES.includes(status as (typeof STATUSES)[number])) return;
+
+  const { error } = await supabase
+    .from("categories")
+    .update({ status: status as (typeof STATUSES)[number] })
+    .eq("id", categoryId);
+
+  if (error) throw new Error(`Changement de statut impossible : ${error.message}`);
+
+  revalidatePath(`/categories/${categoryId}`);
+  const projectId = text(formData, "project_id");
+  if (projectId) revalidatePath(`/projects/${projectId}`);
+}
+
+/* -------------------------------------------- suggestion IA de mots-clés -- */
+
+export type SuggestionState = {
+  status: "idle" | "ok" | "error";
+  message: string;
+  suggestion?: KeywordSuggestion;
+};
+
+export async function suggestKeywordsAction(
+  _prev: SuggestionState,
+  formData: FormData,
+): Promise<SuggestionState> {
+  const { supabase } = await requireUser();
+
+  const categoryId = text(formData, "category_id");
+  if (!categoryId) return { status: "error", message: "Catégorie manquante." };
+
+  const { data: category, error: readError } = await supabase
+    .from("categories")
+    .select("*, projects(id, name, notes)")
+    .eq("id", categoryId)
+    .single();
+
+  if (readError || !category) {
+    return { status: "error", message: `Catégorie introuvable : ${readError?.message ?? ""}` };
+  }
+
+  const keyword = (category.target_keyword ?? "").trim();
+  if (!keyword) {
+    return { status: "error", message: "Renseigne d'abord le mot-clé principal." };
+  }
+
+  const project = category.projects as { id: string; name: string; notes: string | null } | null;
+  const source = (category.source_data ?? {}) as {
+    products?: string[];
+    facets?: { name: string; values: string[] }[];
+  };
+  const gsc = (category.gsc_data ?? {}) as {
+    queries?: { query: string; impressions: number; position: number }[];
+  };
+
+  const { data: siblings } = await supabase
+    .from("categories")
+    .select("target_keyword")
+    .eq("project_id", category.project_id)
+    .neq("id", categoryId);
+
+  try {
+    const suggestion = await suggestKeywords({
+      brand: project?.name ?? "",
+      brief: project?.notes ?? null,
+      categoryName: category.name,
+      keyword,
+      products: source.products ?? [],
+      facets: source.facets ?? [],
+      gscQueries: gsc.queries ?? [],
+      takenKeywords: (siblings ?? [])
+        .map((s) => s.target_keyword)
+        .filter((v): v is string => Boolean(v)),
+    });
+
+    const noPageData = (source.products?.length ?? 0) === 0;
+
+    return {
+      status: "ok",
+      message: noPageData
+        ? "Suggestions générées, mais sans les produits ni les facettes de la page : " +
+          "récupère d'abord la page pour des propositions ancrées dans le catalogue réel."
+        : "Suggestions générées à partir des produits et des filtres de la page.",
+      suggestion,
+    };
+  } catch (error) {
+    if (error instanceof GenerationError) {
+      return { status: "error", message: error.message };
+    }
+    return { status: "error", message: (error as Error).message };
+  }
 }

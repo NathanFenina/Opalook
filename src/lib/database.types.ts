@@ -59,6 +59,11 @@ export type Database = {
           brief: string | null;
           gsc_data: Json;
           gsc_fetched_at: string | null;
+          keyword_volume: number | null;
+          keyword_difficulty: number | null;
+          keyword_cpc: number | null;
+          keyword_intent: string | null;
+          keyword_data_at: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -80,6 +85,11 @@ export type Database = {
           brief?: string | null;
           gsc_data?: Json;
           gsc_fetched_at?: string | null;
+          keyword_volume?: number | null;
+          keyword_difficulty?: number | null;
+          keyword_cpc?: number | null;
+          keyword_intent?: string | null;
+          keyword_data_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };

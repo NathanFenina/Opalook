@@ -260,3 +260,129 @@ export async function generateCategoryContent(
     throw new GenerationError((error as Error).message, "api");
   }
 }
+
+
+/* ------------------------------------------------ suggestion de mots-clés */
+
+export const KeywordSuggestionSchema = z.object({
+  secondaryKeywords: z
+    .array(
+      z.object({
+        keyword: z.string().describe("Mot-clé secondaire, formulé comme une vraie requête"),
+        why: z.string().describe("Une phrase : sur quoi de la page il s'appuie"),
+      }),
+    )
+    .describe("6 à 10 mots-clés secondaires"),
+  fanQueries: z
+    .array(
+      z.object({
+        query: z.string().describe("Question ou requête satellite, formulée comme la tape un acheteur"),
+        why: z.string().describe("Une phrase : pourquoi elle relève de cette catégorie"),
+      }),
+    )
+    .describe("4 à 8 fan queries"),
+});
+
+export type KeywordSuggestion = z.infer<typeof KeywordSuggestionSchema>;
+
+export type SuggestionInput = {
+  brand: string;
+  brief: string | null;
+  categoryName: string;
+  keyword: string;
+  products: string[];
+  facets: { name: string; values: string[] }[];
+  gscQueries: { query: string; impressions: number; position: number }[];
+  /** Mots-clés déjà attribués ailleurs : interdits de proposition. */
+  takenKeywords: string[];
+};
+
+const SUGGESTION_SYSTEM = `Tu es consultant SEO e-commerce. Tu proposes le champ
+sémantique d'une page catégorie à intention transactionnelle.
+
+RÈGLES
+- Les mots-clés secondaires se déduisent de ce que la page contient réellement :
+  matières, pierres, styles, destinataires, conditionnements présents dans les
+  produits et les facettes de filtres fournis. N'invente pas une déclinaison qui
+  n'existe pas au catalogue.
+- Les fan queries sont des questions que tape un acheteur professionnel avant de
+  commander : minimums, tarifs dégressifs, provenance, certificats, délais,
+  retours. Formule-les comme il les taperait, pas comme un rédacteur.
+- Ne propose jamais un mot-clé déjà attribué à une autre catégorie du site, ni
+  une simple reformulation du mot-clé principal.
+- Si des requêtes Search Console sont fournies, privilégie ce qui s'en approche :
+  c'est de la demande constatée, pas supposée.`;
+
+export async function suggestKeywords(
+  input: SuggestionInput,
+): Promise<KeywordSuggestion> {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    throw new GenerationError(
+      "ANTHROPIC_API_KEY absente. Ajoute-la dans les variables d'environnement Vercel.",
+      "no_key",
+    );
+  }
+
+  const client = new Anthropic();
+
+  const prompt = `# Site
+${input.brand}
+${input.brief ? `Brief : ${input.brief}` : ""}
+
+# Catégorie
+Nom : ${input.categoryName}
+Mot-clé principal : ${input.keyword}
+
+# Produits réellement présents
+${bulletList(input.products, 40)}
+
+# Facettes de filtres disponibles
+${
+    input.facets
+      .map((f) => `- ${f.name} : ${f.values.slice(0, 15).join(", ")}`)
+      .join("\n") || "- (aucune facette relevée)"
+  }
+
+# Requêtes Search Console de cette URL
+${
+    input.gscQueries.length > 0
+      ? input.gscQueries
+          .slice(0, 25)
+          .map((r) => `- ${r.query} (${r.impressions} impr., pos. ${r.position.toFixed(1)})`)
+          .join("\n")
+      : "- (aucune donnée)"
+  }
+
+# Déjà attribués ailleurs — interdits
+${input.takenKeywords.slice(0, 80).join(" | ") || "(aucun)"}
+
+Propose le champ sémantique de cette catégorie.`;
+
+  try {
+    const response = await client.messages.parse({
+      model: GENERATION_MODEL,
+      max_tokens: 8000,
+      thinking: { type: "adaptive" },
+      output_config: {
+        effort: "medium",
+        format: zodOutputFormat(KeywordSuggestionSchema),
+      },
+      system: SUGGESTION_SYSTEM,
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    if (!response.parsed_output) {
+      throw new GenerationError("Aucune suggestion exploitable renvoyée.", "empty");
+    }
+    return response.parsed_output;
+  } catch (error) {
+    if (error instanceof GenerationError) throw error;
+    if (error instanceof Anthropic.APIError) {
+      throw new GenerationError(
+        `Erreur API Anthropic (${error.status}) : ${error.message}`,
+        "api",
+      );
+    }
+    throw new GenerationError((error as Error).message, "api");
+  }
+}

@@ -2,17 +2,32 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/server";
-import {
-  Card,
-  EmptyState,
-  Field,
-  ScoreBadge,
-  StatusPill,
-  buttonClass,
-  inputClass,
-} from "@/components/ui";
+import { Card, EmptyState, Field, buttonClass, inputClass } from "@/components/ui";
+import { StatusSelect } from "@/components/status-select";
 import { createCategory, saveProjectBrief } from "../../actions";
 import { ImportCategoriesForm, ImportGscForm } from "./import-forms";
+
+type PageMetrics = { clicks: number; impressions: number; position: number; opportunity: number };
+
+function Cell({
+  value,
+  tone,
+}: {
+  value: number | string | null | undefined;
+  tone?: string;
+}) {
+  const display =
+    value === null || value === undefined || value === ""
+      ? "—"
+      : typeof value === "number"
+        ? value.toLocaleString("fr-FR")
+        : value;
+  return (
+    <td className={`px-3 py-2 text-right tabular-nums ${tone ?? "text-slate-600 dark:text-slate-400"}`}>
+      {display}
+    </td>
+  );
+}
 
 export default async function ProjectPage({
   params,
@@ -33,7 +48,7 @@ export default async function ProjectPage({
   const { data: categories, error } = await supabase
     .from("categories")
     .select(
-      "id, name, url, status, target_keyword, gsc_data, optimizations(score, version)",
+      "id, name, url, status, target_keyword, gsc_data, keyword_volume, keyword_difficulty",
     )
     .eq("project_id", id);
 
@@ -42,12 +57,19 @@ export default async function ProjectPage({
   // Trié par potentiel : on commence par ce qui rapporte, pas par ordre d'ajout.
   const ranked = [...(categories ?? [])]
     .map((category) => {
-      const gsc = (category.gsc_data ?? {}) as {
-        pageMetrics?: { impressions: number; position: number; opportunity: number };
-      };
+      const gsc = (category.gsc_data ?? {}) as { pageMetrics?: PageMetrics };
       return { ...category, metrics: gsc.pageMetrics };
     })
     .sort((a, b) => (b.metrics?.opportunity ?? -1) - (a.metrics?.opportunity ?? -1));
+
+  const totals = ranked.reduce(
+    (acc, category) => ({
+      impressions: acc.impressions + (category.metrics?.impressions ?? 0),
+      clicks: acc.clicks + (category.metrics?.clicks ?? 0),
+      done: acc.done + (category.status === "published" ? 1 : 0),
+    }),
+    { impressions: 0, clicks: 0, done: 0 },
+  );
 
   return (
     <div className="space-y-8">
@@ -59,57 +81,82 @@ export default async function ProjectPage({
           ← Tous les projets
         </Link>
         <h1 className="text-xl font-semibold tracking-tight">{project.name}</h1>
-        {project.domain && (
-          <p className="text-sm text-slate-600 dark:text-slate-400">{project.domain}</p>
-        )}
+        <p className="text-sm text-slate-600 dark:text-slate-400">
+          {project.domain ?? "domaine non renseigné"} · {ranked.length} catégories ·{" "}
+          {totals.impressions.toLocaleString("fr-FR")} impressions ·{" "}
+          {totals.clicks.toLocaleString("fr-FR")} clics · {totals.done} terminée
+          {totals.done > 1 ? "s" : ""}
+        </p>
       </div>
 
       {ranked.length > 0 ? (
-        <ul className="divide-y divide-slate-200 overflow-hidden rounded-xl border border-slate-200 bg-white dark:divide-slate-800 dark:border-slate-800 dark:bg-slate-900">
-          {ranked.map((category) => {
-            const latest = [...(category.optimizations ?? [])].sort(
-              (a, b) => b.version - a.version,
-            )[0];
-            return (
-              <li key={category.id}>
-                <Link
-                  href={`/categories/${category.id}`}
-                  className="flex items-center justify-between gap-4 px-4 py-3 transition hover:bg-slate-50 dark:hover:bg-slate-800"
-                >
-                  <span className="min-w-0">
-                    <span className="block truncate font-medium">{category.name}</span>
-                    <span className="block truncate text-xs text-slate-500 dark:text-slate-400">
-                      {category.target_keyword
-                        ? `« ${category.target_keyword} » · `
-                        : "sans mot-clé · "}
-                      {category.url}
-                    </span>
-                    {category.metrics && (
-                      <span className="mt-0.5 block text-xs">
-                        <span className="text-slate-500 dark:text-slate-400">
-                          {category.metrics.impressions.toLocaleString("fr-FR")} impr. · pos.{" "}
-                          {category.metrics.position.toFixed(1)}
-                        </span>
-                        {category.metrics.position >= 8 && category.metrics.position <= 20 && (
-                          <span className="ml-2 font-medium text-amber-700 dark:text-amber-400">
-                            gain rapide
-                          </span>
-                        )}
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
+          <table className="w-full min-w-[52rem] border-collapse bg-white text-sm dark:bg-slate-900">
+            <thead>
+              <tr className="border-b border-slate-200 text-xs text-slate-500 dark:border-slate-800 dark:text-slate-400">
+                <th className="px-3 py-2 text-left font-medium">Catégorie</th>
+                <th className="px-3 py-2 text-left font-medium">Mot-clé principal</th>
+                <th className="px-3 py-2 text-left font-medium">Statut</th>
+                <th className="px-3 py-2 text-right font-medium">Impr.</th>
+                <th className="px-3 py-2 text-right font-medium">Clics</th>
+                <th className="px-3 py-2 text-right font-medium">Pos.</th>
+                <th className="px-3 py-2 text-right font-medium">Volume</th>
+                <th className="px-3 py-2 text-right font-medium">KD</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ranked.map((category) => {
+                const quickWin =
+                  category.metrics &&
+                  category.metrics.position >= 8 &&
+                  category.metrics.position <= 20;
+                return (
+                  <tr
+                    key={category.id}
+                    className="border-b border-slate-100 last:border-0 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
+                  >
+                    <td className="max-w-xs px-3 py-2">
+                      <Link
+                        href={`/categories/${category.id}`}
+                        className="block truncate font-medium underline-offset-4 hover:underline"
+                      >
+                        {category.name}
+                      </Link>
+                      <span className="block truncate text-xs text-slate-400">
+                        {category.url.replace(/^https?:\/\/[^/]+/, "")}
                       </span>
-                    )}
-                  </span>
-                  <span className="flex shrink-0 items-center gap-2">
-                    {latest?.score != null && <ScoreBadge score={latest.score} />}
-                    <StatusPill status={category.status} />
-                  </span>
-                </Link>
-              </li>
-            );
-          })}
-        </ul>
+                    </td>
+                    <td className="max-w-[14rem] px-3 py-2">
+                      <span className="block truncate text-slate-600 dark:text-slate-400">
+                        {category.target_keyword ?? "—"}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2">
+                      <StatusSelect
+                        categoryId={category.id}
+                        projectId={project.id}
+                        status={category.status}
+                      />
+                    </td>
+                    <Cell value={category.metrics?.impressions} />
+                    <Cell value={category.metrics?.clicks} />
+                    <Cell
+                      value={category.metrics?.position.toFixed(1)}
+                      tone={
+                        quickWin ? "font-medium text-amber-700 dark:text-amber-400" : undefined
+                      }
+                    />
+                    <Cell value={category.keyword_volume} />
+                    <Cell value={category.keyword_difficulty} />
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       ) : (
         <EmptyState>
-          Aucune catégorie suivie. Ajoute la première URL à passer à la moulinette.
+          Aucune catégorie suivie. Importe les URL ci-dessous ou dépose un export Search Console.
         </EmptyState>
       )}
 
@@ -153,7 +200,7 @@ export default async function ProjectPage({
 
       <Card
         title="Importer les données Search Console"
-        description="Rapproche les requêtes de chaque URL et signale les cannibalisations existantes."
+        description="Rapproche les métriques de chaque URL et signale les cannibalisations existantes."
       >
         <ImportGscForm projectId={project.id} />
       </Card>
@@ -163,27 +210,13 @@ export default async function ProjectPage({
           <input type="hidden" name="project_id" value={project.id} />
           <div className="grid gap-4 sm:grid-cols-3">
             <Field label="Nom de la catégorie">
-              <input
-                name="name"
-                required
-                placeholder="Chaussures de running"
-                className={inputClass}
-              />
+              <input name="name" required placeholder="Chaussures de running" className={inputClass} />
             </Field>
             <Field label="URL">
-              <input
-                name="url"
-                required
-                placeholder="/chaussures/running"
-                className={inputClass}
-              />
+              <input name="url" required placeholder="https://…" className={inputClass} />
             </Field>
             <Field label="Mot-clé cible">
-              <input
-                name="target_keyword"
-                placeholder="chaussures de running"
-                className={inputClass}
-              />
+              <input name="target_keyword" placeholder="chaussures de running" className={inputClass} />
             </Field>
           </div>
           <button type="submit" className={buttonClass}>

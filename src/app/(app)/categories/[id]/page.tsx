@@ -7,14 +7,12 @@ import {
   Card,
   ChecksList,
   EmptyState,
-  Field,
   ScoreBadge,
-  StatusPill,
-  buttonClass,
-  inputClass,
   secondaryButtonClass,
 } from "@/components/ui";
-import { deleteCategory, saveCategorySource } from "../../actions";
+import { Metric, MetricRow } from "@/components/metrics";
+import { StatusSelect } from "@/components/status-select";
+import { deleteCategory } from "../../actions";
 import { ImportForm } from "./import-form";
 import { GenerateForm } from "./generate-form";
 import { CopyButton } from "./copy-button";
@@ -24,6 +22,17 @@ import { KeywordsForm, type GscQuery } from "./keywords-form";
 // fonction Vercel : on demande explicitement la fenêtre maximale.
 export const maxDuration = 300;
 
+type SourceData = {
+  products?: string[];
+  productCount?: number | null;
+  facets?: { name: string; values: string[] }[];
+  breadcrumb?: string[];
+};
+
+function sourceData(payload: unknown): SourceData {
+  return payload && typeof payload === "object" ? (payload as SourceData) : {};
+}
+
 function checksFromPayload(payload: unknown): Check[] {
   if (payload && typeof payload === "object" && "checks" in payload) {
     const checks = (payload as { checks: unknown }).checks;
@@ -32,30 +41,14 @@ function checksFromPayload(payload: unknown): Check[] {
   return [];
 }
 
-type SourceData = {
-  products?: string[];
-  productCount?: number | null;
-  facets?: { name: string; values: string[] }[];
-  headings?: { level: number; text: string }[];
-  breadcrumb?: string[];
-};
-
-function sourceData(payload: unknown): SourceData {
-  return payload && typeof payload === "object" ? (payload as SourceData) : {};
-}
-
 function Output({ label, value }: { label: string; value: string | null }) {
   return (
     <div className="space-y-1">
       <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
         {label}
-        {value && (
-          <span className="ml-2 font-normal text-slate-400">
-            {value.length} car.
-          </span>
-        )}
+        {value && <span className="ml-2 font-normal text-slate-400">{value.length} car.</span>}
       </p>
-      <p className="whitespace-pre-wrap rounded-lg bg-slate-50 px-3 py-2 text-sm dark:bg-slate-950">
+      <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm whitespace-pre-wrap dark:bg-slate-950">
         {value || "—"}
       </p>
     </div>
@@ -80,8 +73,11 @@ export default async function CategoryPage({
 
   const project = category.projects as { id: string; name: string } | null;
   const source = sourceData(category.source_data);
-  const gsc = (category.gsc_data ?? {}) as { queries?: GscQuery[] };
-  const suggestions = gsc.queries ?? [];
+  const gsc = (category.gsc_data ?? {}) as {
+    queries?: GscQuery[];
+    pageMetrics?: { clicks: number; impressions: number; position: number };
+  };
+  const metrics = gsc.pageMetrics;
 
   const { data: optimizations, error } = await supabase
     .from("optimizations")
@@ -92,19 +88,27 @@ export default async function CategoryPage({
   if (error) throw new Error(`Lecture des optimisations impossible : ${error.message}`);
 
   const latest = optimizations?.[0];
-  const before = auditSource({
-    name: category.name,
-    url: category.url,
-    targetKeyword: category.target_keyword,
-    sourceTitle: category.source_title,
-    sourceMetaDescription: category.source_meta_description,
-    sourceH1: category.source_h1,
-    sourceContent: category.source_content,
-  });
+
+  // La page d'origine n'est notée que si on l'a effectivement relevée :
+  // auditer un formulaire vide ne produirait que des feux rouges sans information.
+  const hasSource = Boolean(
+    category.source_title || category.source_h1 || category.source_content,
+  );
+  const before = hasSource
+    ? auditSource({
+        name: category.name,
+        url: category.url,
+        targetKeyword: category.target_keyword,
+        sourceTitle: category.source_title,
+        sourceMetaDescription: category.source_meta_description,
+        sourceH1: category.source_h1,
+        sourceContent: category.source_content,
+      })
+    : null;
 
   return (
     <div className="space-y-8">
-      <div className="space-y-1">
+      <div className="space-y-2">
         {project && (
           <Link
             href={`/projects/${project.id}`}
@@ -115,63 +119,65 @@ export default async function CategoryPage({
         )}
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-xl font-semibold tracking-tight">{category.name}</h1>
-          <StatusPill status={category.status} />
+          {project && (
+            <StatusSelect
+              categoryId={category.id}
+              projectId={project.id}
+              status={category.status}
+            />
+          )}
         </div>
-        <p className="text-sm text-slate-600 dark:text-slate-400">{category.url}</p>
+        <a
+          href={category.url}
+          target="_blank"
+          rel="noreferrer"
+          className="block text-sm break-all text-slate-600 underline-offset-4 hover:underline dark:text-slate-400"
+        >
+          {category.url}
+        </a>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3">
-        <ScoreBadge score={before.score} label="avant" />
-        {latest?.score != null && (
-          <>
-            <span aria-hidden className="text-slate-400">
-              →
-            </span>
-            <ScoreBadge score={latest.score} label={`v${latest.version}`} />
-          </>
-        )}
-        <GenerateForm categoryId={category.id} hasVersion={Boolean(latest)} />
-      </div>
+      <MetricRow>
+        <Metric label="Impressions" value={metrics?.impressions ?? null} />
+        <Metric label="Clics" value={metrics?.clicks ?? null} />
+        <Metric
+          label="Position"
+          value={metrics?.position ?? null}
+          tone={
+            metrics && metrics.position >= 8 && metrics.position <= 20 ? "warn" : undefined
+          }
+          hint={
+            metrics && metrics.position >= 8 && metrics.position <= 20
+              ? "gain rapide"
+              : undefined
+          }
+        />
+        <Metric label="Volume / mois" value={category.keyword_volume} />
+        <Metric
+          label="Difficulté SEO"
+          value={category.keyword_difficulty}
+          hint={category.keyword_intent ?? undefined}
+        />
+      </MetricRow>
 
       <Card
-        title="Récupération de la page"
-        description="Va chercher les balises, le texte, les produits et les filtres directement sur l'URL."
+        title="Données de la page"
+        description="Va chercher les balises, le texte, les produits et les filtres directement sur l'URL. C'est ce qui rend le texte spécifique à cette catégorie."
       >
         <div className="space-y-3">
           <ImportForm categoryId={category.id} />
           {category.source_fetched_at && (
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Dernière récupération :{" "}
-              {new Date(category.source_fetched_at).toLocaleString("fr-FR")}
+              Dernière récupération : {new Date(category.source_fetched_at).toLocaleString("fr-FR")}
             </p>
           )}
         </div>
       </Card>
 
-      <Card
-        title="Mots-clés et brief"
-        description="Ce bloc pilote entièrement la rédaction : mot-clé principal, secondaires, fan queries et consignes."
-      >
-        <KeywordsForm
-          categoryId={category.id}
-          initialKeyword={category.target_keyword ?? ""}
-          initialSecondary={category.secondary_keywords ?? []}
-          initialFanQueries={category.fan_queries ?? []}
-          initialBrief={category.brief ?? ""}
-          suggestions={suggestions}
-        />
-        {category.gsc_fetched_at && (
-          <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
-            Données GSC importées le{" "}
-            {new Date(category.gsc_fetched_at).toLocaleString("fr-FR")}
-          </p>
-        )}
-      </Card>
-
       {Boolean(source.products?.length || source.facets?.length) && (
         <Card
-          title="Matière première"
-          description="Ce qui rendra le texte réellement spécifique à cette catégorie."
+          title="Matière première relevée"
+          description="Produits et filtres réellement présents. C'est ce qui nourrit la rédaction."
         >
           <div className="grid gap-6 sm:grid-cols-2">
             <div className="space-y-2">
@@ -192,9 +198,7 @@ export default async function CategoryPage({
               </ul>
             </div>
             <div className="space-y-2">
-              <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
-                Filtres
-              </p>
+              <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Filtres</p>
               <ul className="space-y-2 text-sm">
                 {(source.facets ?? []).map((facet) => (
                   <li key={facet.name}>
@@ -211,64 +215,50 @@ export default async function CategoryPage({
       )}
 
       <Card
-        title="Contenu source"
-        description="Ce qu'on a relevé sur la page actuelle du client. Sert d'entrée à la moulinette."
+        title="Mots-clés et brief"
+        description="Ce bloc pilote entièrement la rédaction."
       >
-        <form action={saveCategorySource} className="space-y-4">
-          <input type="hidden" name="category_id" value={category.id} />
-          <Field label="H1 actuel">
-            <input
-              name="source_h1"
-              defaultValue={category.source_h1 ?? ""}
-              className={inputClass}
-            />
-          </Field>
-          <Field label="Title actuel">
-            <input
-              name="source_title"
-              defaultValue={category.source_title ?? ""}
-              className={inputClass}
-            />
-          </Field>
-          <Field label="Meta description actuelle">
-            <input
-              name="source_meta_description"
-              defaultValue={category.source_meta_description ?? ""}
-              className={inputClass}
-            />
-          </Field>
-          <Field label="Texte de catégorie actuel" hint="HTML ou texte brut, peu importe.">
-            <textarea
-              name="source_content"
-              rows={6}
-              defaultValue={category.source_content ?? ""}
-              className={inputClass}
-            />
-          </Field>
-          <button type="submit" className={buttonClass}>
-            Enregistrer
-          </button>
-        </form>
+        <KeywordsForm
+          categoryId={category.id}
+          initialKeyword={category.target_keyword ?? ""}
+          initialSecondary={category.secondary_keywords ?? []}
+          initialFanQueries={category.fan_queries ?? []}
+          initialBrief={category.brief ?? ""}
+          suggestions={gsc.queries ?? []}
+        />
       </Card>
 
-      <Card title="Audit de la version actuelle">
-        <ChecksList checks={before.checks} />
+      <Card
+        title="Rédaction"
+        description="Génère le texte optimisé et le note sur le même barème que la version en ligne."
+      >
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center gap-3">
+            {before && <ScoreBadge score={before.score} label="en ligne" />}
+            {before && latest?.score != null && (
+              <span aria-hidden className="text-slate-400">
+                →
+              </span>
+            )}
+            {latest?.score != null && (
+              <ScoreBadge score={latest.score} label={`v${latest.version}`} />
+            )}
+          </div>
+          <GenerateForm categoryId={category.id} hasVersion={Boolean(latest)} />
+        </div>
       </Card>
 
       {latest ? (
         <Card
           title={`Version optimisée v${latest.version}`}
-          description={`Moteur ${latest.engine ?? "inconnu"} · ${new Date(
-            latest.created_at,
-          ).toLocaleString("fr-FR")}`}
+          description={`${latest.engine ?? "moteur inconnu"}${
+            latest.editorial_angle ? ` · angle : ${latest.editorial_angle}` : ""
+          } · ${new Date(latest.created_at).toLocaleString("fr-FR")}`}
         >
           <div className="space-y-4">
             <Output label="Title" value={latest.title} />
             <Output label="Meta description" value={latest.meta_description} />
-            <Output
-              label="H1 — à reporter sur le nom de la catégorie"
-              value={latest.h1}
-            />
+            <Output label="H1 — à reporter sur le nom de la catégorie" value={latest.h1} />
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
@@ -291,21 +281,31 @@ export default async function CategoryPage({
           </div>
         </Card>
       ) : (
-        <EmptyState>
-          Pas encore de version optimisée. Lance la moulinette pour en générer une.
-        </EmptyState>
+        <EmptyState>Pas encore de version optimisée. Lance la rédaction pour en générer une.</EmptyState>
+      )}
+
+      {before && (
+        <Card
+          title="Audit de la version en ligne"
+          description="Le même barème appliqué au texte actuellement publié, pour mesurer l'écart."
+        >
+          <ChecksList checks={before.checks} />
+        </Card>
       )}
 
       {optimizations && optimizations.length > 1 && (
         <Card title="Historique">
           <ul className="space-y-2 text-sm">
             {optimizations.slice(1).map((optimization) => (
-              <li key={optimization.id} className="flex items-center gap-3">
+              <li key={optimization.id} className="flex flex-wrap items-center gap-3">
                 <span className="font-medium">v{optimization.version}</span>
-                {optimization.score != null && (
-                  <ScoreBadge score={optimization.score} />
+                {optimization.score != null && <ScoreBadge score={optimization.score} />}
+                {optimization.editorial_angle && (
+                  <span className="text-xs text-slate-500 dark:text-slate-400">
+                    {optimization.editorial_angle}
+                  </span>
                 )}
-                <span className="text-xs text-slate-500 dark:text-slate-400">
+                <span className="text-xs text-slate-400">
                   {new Date(optimization.created_at).toLocaleString("fr-FR")}
                 </span>
               </li>
