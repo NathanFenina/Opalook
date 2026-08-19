@@ -380,7 +380,13 @@ export type BulkImportState = {
   message: string;
 };
 
-/** Une ligne par catégorie : `URL` ou `URL | Nom` ou `URL<tab>Nom`. */
+/**
+ * Une URL de catégorie par ligne, avec un nom facultatif après `|`.
+ *
+ * Tolère qu'on colle directement des lignes de CSV (`URL,clics,impressions,…`) :
+ * on isole la première URL de la ligne et on ignore le reste. Ça évite d'avoir à
+ * nettoyer un export avant de s'en servir.
+ */
 function parseUrlList(raw: string): { url: string; name: string }[] {
   const out: { url: string; name: string }[] = [];
 
@@ -388,11 +394,15 @@ function parseUrlList(raw: string): { url: string; name: string }[] {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
 
-    const [urlPart, ...rest] = trimmed.split(/\s*[|\t;]\s*/);
-    const url = urlPart.trim();
-    if (!/^https?:\/\//i.test(url)) continue;
+    const found = trimmed.match(/https?:\/\/[^\s,;|"'<>)\]]+/i);
+    if (!found) continue;
+    const url = found[0].replace(/[.,;]+$/, "");
 
-    const explicitName = rest.join(" ").trim();
+    // Un nom n'est retenu que s'il est explicitement séparé par une barre verticale,
+    // pour ne pas confondre avec les colonnes de métriques d'un CSV.
+    const explicitName = trimmed.includes("|")
+      ? trimmed.split("|").slice(1).join(" ").trim()
+      : "";
     out.push({ url, name: explicitName || nameFromUrl(url) || url });
   }
 
