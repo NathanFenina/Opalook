@@ -32,11 +32,22 @@ export default async function ProjectPage({
 
   const { data: categories, error } = await supabase
     .from("categories")
-    .select("id, name, url, status, target_keyword, optimizations(score, version)")
-    .eq("project_id", id)
-    .order("created_at", { ascending: false });
+    .select(
+      "id, name, url, status, target_keyword, gsc_data, optimizations(score, version)",
+    )
+    .eq("project_id", id);
 
   if (error) throw new Error(`Lecture des catégories impossible : ${error.message}`);
+
+  // Trié par potentiel : on commence par ce qui rapporte, pas par ordre d'ajout.
+  const ranked = [...(categories ?? [])]
+    .map((category) => {
+      const gsc = (category.gsc_data ?? {}) as {
+        pageMetrics?: { impressions: number; position: number; opportunity: number };
+      };
+      return { ...category, metrics: gsc.pageMetrics };
+    })
+    .sort((a, b) => (b.metrics?.opportunity ?? -1) - (a.metrics?.opportunity ?? -1));
 
   return (
     <div className="space-y-8">
@@ -53,9 +64,9 @@ export default async function ProjectPage({
         )}
       </div>
 
-      {categories && categories.length > 0 ? (
+      {ranked.length > 0 ? (
         <ul className="divide-y divide-slate-200 overflow-hidden rounded-xl border border-slate-200 bg-white dark:divide-slate-800 dark:border-slate-800 dark:bg-slate-900">
-          {categories.map((category) => {
+          {ranked.map((category) => {
             const latest = [...(category.optimizations ?? [])].sort(
               (a, b) => b.version - a.version,
             )[0];
@@ -73,6 +84,19 @@ export default async function ProjectPage({
                         : "sans mot-clé · "}
                       {category.url}
                     </span>
+                    {category.metrics && (
+                      <span className="mt-0.5 block text-xs">
+                        <span className="text-slate-500 dark:text-slate-400">
+                          {category.metrics.impressions.toLocaleString("fr-FR")} impr. · pos.{" "}
+                          {category.metrics.position.toFixed(1)}
+                        </span>
+                        {category.metrics.position >= 8 && category.metrics.position <= 20 && (
+                          <span className="ml-2 font-medium text-amber-700 dark:text-amber-400">
+                            gain rapide
+                          </span>
+                        )}
+                      </span>
+                    )}
                   </span>
                   <span className="flex shrink-0 items-center gap-2">
                     {latest?.score != null && <ScoreBadge score={latest.score} />}

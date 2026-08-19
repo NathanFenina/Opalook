@@ -86,7 +86,13 @@ function toNumber(value: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-export function parseGscCsv(content: string): GscRow[] {
+export type ParsedGsc = {
+  rows: GscRow[];
+  /** Faux pour un export « Pages » : métriques par URL, sans le détail des requêtes. */
+  hasQuery: boolean;
+};
+
+export function parseGscCsv(content: string): ParsedGsc {
   const lines = content.split(/\r?\n/).filter((line) => line.trim().length > 0);
   if (lines.length < 2) {
     throw new GscParseError("Fichier vide ou sans ligne de données.");
@@ -103,14 +109,17 @@ export function parseGscCsv(content: string): GscRow[] {
   const pageIndex = indexOf("page");
   const queryIndex = indexOf("query");
 
-  if (pageIndex === -1 || queryIndex === -1) {
+  if (pageIndex === -1) {
     throw new GscParseError(
-      `Le fichier doit contenir une colonne page ET une colonne requête sur la même ligne. ` +
-        `En-têtes trouvés : ${headers.join(", ")}. ` +
-        `L'export standard de Search Console sépare les deux et ne convient pas — ` +
-        `utilise un export Looker Studio « URL Impression » avec les dimensions Landing Page + Query.`,
+      `Aucune colonne d'URL trouvée. En-têtes lus : ${headers.join(", ")}. ` +
+        `Attendu une colonne « Pages les plus populaires », « Landing Page », « Page » ou « URL ».`,
     );
   }
+
+  // Sans dimension requête, l'export reste utile : les métriques par URL
+  // suffisent à prioriser les catégories. Le détail des requêtes viendra d'un
+  // export croisant page et requête.
+  const hasQuery = queryIndex !== -1;
 
   const clicksIndex = indexOf("clicks");
   const impressionsIndex = indexOf("impressions");
@@ -121,8 +130,9 @@ export function parseGscCsv(content: string): GscRow[] {
   for (const line of lines.slice(1)) {
     const cells = splitLine(line, delimiter);
     const page = cells[pageIndex] ?? "";
-    const query = cells[queryIndex] ?? "";
-    if (!page || !query) continue;
+    const query = hasQuery ? (cells[queryIndex] ?? "") : "";
+    if (!page) continue;
+    if (hasQuery && !query) continue;
 
     rows.push({
       page,
@@ -135,10 +145,33 @@ export function parseGscCsv(content: string): GscRow[] {
   }
 
   if (rows.length === 0) {
-    throw new GscParseError("Aucune ligne exploitable : page ou requête vide partout.");
+    throw new GscParseError("Aucune ligne exploitable : colonne d'URL vide partout.");
   }
 
-  return rows;
+  return { rows, hasQuery };
+}
+
+/**
+ * Potentiel d'une catégorie : le volume déjà capté, pondéré par la marge de
+ * progression que laisse sa position.
+ *
+ * Une page en position 12 avec 3 000 impressions vaut bien plus qu'une page en
+ * position 2 avec le même volume : la première a tout à gagner, la seconde n'a
+ * presque plus rien à prendre. Les positions au-delà de 30 sont dépondérées —
+ * remonter de la page 4 demande davantage qu'une réécriture de texte.
+ */
+export function opportunityScore(impressions: number, position: number): number {
+  const weight =
+    position < 4
+      ? 0.15
+      : position <= 10
+        ? 1
+        : position <= 20
+          ? 0.9
+          : position <= 30
+            ? 0.5
+            : 0.25;
+  return Math.round(impressions * weight);
 }
 
 /** Normalise une URL pour rapprocher les lignes GSC des catégories enregistrées. */

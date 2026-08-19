@@ -16,6 +16,7 @@ import {
   parseGscCsv,
   groupByPage,
   findCannibalization,
+  opportunityScore,
   looksLikeCategoryUrl,
   nameFromUrl,
   urlKey,
@@ -478,15 +479,17 @@ export async function importGscData(
     return { status: "error", message: "Dépose un fichier CSV ou colle son contenu." };
   }
 
-  let rows;
+  let parsed;
   try {
-    rows = parseGscCsv(content);
+    parsed = parseGscCsv(content);
   } catch (error) {
     if (error instanceof GscParseError) {
       return { status: "error", message: error.message };
     }
     return { status: "error", message: (error as Error).message };
   }
+
+  const { rows, hasQuery } = parsed;
 
   // L'export porte les URL du site : on en déduit les catégories plutôt que
   // d'exiger une liste établie ailleurs.
@@ -540,13 +543,30 @@ export async function importGscData(
   let matched = 0;
 
   for (const category of categories) {
-    const queries = grouped.get(urlKey(category.url));
-    if (!queries || queries.length === 0) continue;
+    const pageRows = grouped.get(urlKey(category.url));
+    if (!pageRows || pageRows.length === 0) continue;
+
+    // Métriques de la page : la somme des requêtes en mode croisé, la ligne
+    // elle-même quand l'export ne porte que les pages.
+    const clicks = pageRows.reduce((sum, row) => sum + row.clicks, 0);
+    const impressions = pageRows.reduce((sum, row) => sum + row.impressions, 0);
+    const weightedPosition =
+      impressions > 0
+        ? pageRows.reduce((sum, row) => sum + row.position * row.impressions, 0) / impressions
+        : (pageRows[0]?.position ?? 0);
 
     const { error: updateError } = await supabase
       .from("categories")
       .update({
-        gsc_data: { queries: queries.slice(0, 100) },
+        gsc_data: {
+          pageMetrics: {
+            clicks,
+            impressions,
+            position: Number(weightedPosition.toFixed(1)),
+            opportunity: opportunityScore(impressions, weightedPosition),
+          },
+          queries: hasQuery ? pageRows.slice(0, 100) : [],
+        },
         gsc_fetched_at: new Date().toISOString(),
       })
       .eq("id", category.id);
@@ -555,8 +575,9 @@ export async function importGscData(
   }
 
   // On ne signale que les conflits qui concernent au moins une catégorie suivie.
+  // Sans dimension requête, la cannibalisation n'est pas détectable.
   const tracked = new Set(categories.map((category) => urlKey(category.url)));
-  const cannibalization = findCannibalization(rows)
+  const cannibalization = (hasQuery ? findCannibalization(rows) : [])
     .filter((conflict) => conflict.pages.some((page) => tracked.has(urlKey(page.page))))
     .slice(0, 12)
     .map((conflict) => ({
@@ -574,6 +595,10 @@ export async function importGscData(
       `${rows.length} lignes lues, ${grouped.size} URL distinctes. ` +
       (created > 0 ? `${created} catégorie(s) créée(s) depuis l'export. ` : "") +
       `${matched} catégorie(s) sur ${categories.length} enrichie(s).` +
+      (hasQuery
+        ? ""
+        : " L'export ne porte pas la dimension requête : les métriques par URL servent à prioriser, " +
+          "mais le détail des mots-clés demandera un export croisant page et requête.") +
       (matched === 0
         ? " Aucune correspondance : vérifie que les URL de l'export sont bien celles des catégories."
         : ""),
