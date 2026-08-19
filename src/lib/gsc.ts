@@ -217,3 +217,52 @@ export function findCannibalization(
       a.pages.reduce((s, p) => s + p.impressions, 0),
   );
 }
+
+/* ------------------------------------------- reconnaissance des catégories */
+
+/**
+ * Reconnaît une URL de catégorie PrestaShop dans un lot d'URL mélangées.
+ *
+ * Nomenclature observée sur opalook.eu :
+ *   catégorie -> /fr/13-grossiste-bijoux-revendeur-professionnel
+ *   produit   -> /fr/<categorie>/1234-nom-du-produit.html
+ *
+ * Deux signaux discriminants : la catégorie tient en deux segments
+ * (langue + identifiant-slug) et ne porte pas d'extension .html, là où la fiche
+ * produit descend d'un cran et se termine par .html. On refuse aussi tout ce qui
+ * porte une chaîne de requête : ce sont les URL à facettes, pas les catégories.
+ */
+export function looksLikeCategoryUrl(rawUrl: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(rawUrl.trim());
+  } catch {
+    return false;
+  }
+
+  if (url.search) return false;
+
+  const segments = url.pathname.split("/").filter(Boolean);
+  if (segments.length !== 2) return false;
+
+  const [lang, slug] = segments;
+  if (!/^[a-z]{2}(-[a-z]{2})?$/i.test(lang)) return false;
+  if (slug.endsWith(".html")) return false;
+
+  return /^\d+-[a-z0-9]/i.test(slug);
+}
+
+/** Dérive un nom lisible depuis le slug : "13-grossiste-bijoux-pro" -> "Grossiste bijoux pro". */
+export function nameFromUrl(rawUrl: string): string {
+  try {
+    const segment = new URL(rawUrl).pathname.split("/").filter(Boolean).pop() ?? rawUrl;
+    const words = segment
+      .replace(/\.html$/i, "")
+      .replace(/^\d+[-_]/, "")
+      .replace(/[-_]+/g, " ")
+      .trim();
+    return words.charAt(0).toUpperCase() + words.slice(1);
+  } catch {
+    return rawUrl;
+  }
+}

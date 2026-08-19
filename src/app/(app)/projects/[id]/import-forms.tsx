@@ -84,6 +84,22 @@ export function ImportGscForm({ projectId }: { projectId: string }) {
       <Field label="…ou colle le contenu CSV">
         <textarea name="csv" rows={4} className={`${inputClass} font-mono text-xs`} />
       </Field>
+
+      <label className="flex items-start gap-2.5 text-sm">
+        <input
+          type="checkbox"
+          name="create_missing"
+          defaultChecked
+          className="mt-0.5 size-4 rounded border-slate-300 dark:border-slate-700"
+        />
+        <span>
+          Créer les catégories détectées dans l&apos;export
+          <span className="block text-xs text-slate-500 dark:text-slate-400">
+            Reconnaît les URL de catégories PrestaShop (/fr/13-mon-slug) et écarte fiches
+            produits, pages CMS et URL à facettes. Évite d&apos;avoir à établir la liste ailleurs.
+          </span>
+        </span>
+      </label>
       <Submit label="Importer les données GSC" pendingLabel="Analyse…" />
       <Feedback status={state.status} message={state.message} />
 

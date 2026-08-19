@@ -16,6 +16,8 @@ import {
   parseGscCsv,
   groupByPage,
   findCannibalization,
+  looksLikeCategoryUrl,
+  nameFromUrl,
   urlKey,
   GscParseError,
 } from "@/lib/gsc";
@@ -391,20 +393,7 @@ function parseUrlList(raw: string): { url: string; name: string }[] {
     if (!/^https?:\/\//i.test(url)) continue;
 
     const explicitName = rest.join(" ").trim();
-    let name = explicitName;
-
-    if (!name) {
-      // Dérive un nom lisible du dernier segment : "13-grossiste-bijoux-pro" -> "Grossiste bijoux pro"
-      try {
-        const segment = new URL(url).pathname.split("/").filter(Boolean).pop() ?? url;
-        const words = segment.replace(/^\d+[-_]/, "").replace(/[-_]+/g, " ").trim();
-        name = words.charAt(0).toUpperCase() + words.slice(1);
-      } catch {
-        name = url;
-      }
-    }
-
-    out.push({ url, name: name || url });
+    out.push({ url, name: explicitName || nameFromUrl(url) || url });
   }
 
   return out;
@@ -489,6 +478,37 @@ export async function importGscData(
     return { status: "error", message: (error as Error).message };
   }
 
+  // L'export porte les URL du site : on en déduit les catégories plutôt que
+  // d'exiger une liste établie ailleurs.
+  let created = 0;
+  if (formData.get("create_missing")) {
+    const detected = new Map<string, string>();
+    for (const row of rows) {
+      if (looksLikeCategoryUrl(row.page)) detected.set(urlKey(row.page), row.page);
+    }
+
+    if (detected.size > 0) {
+      const { error: insertError, count } = await supabase
+        .from("categories")
+        .upsert(
+          [...detected.values()].map((url) => ({
+            project_id: projectId,
+            url,
+            name: nameFromUrl(url) || url,
+          })),
+          { onConflict: "project_id,url", ignoreDuplicates: true, count: "exact" },
+        );
+
+      if (insertError) {
+        return {
+          status: "error",
+          message: `Création des catégories détectées impossible : ${insertError.message}`,
+        };
+      }
+      created = count ?? 0;
+    }
+  }
+
   const { data: categories, error: readError } = await supabase
     .from("categories")
     .select("id, url")
@@ -500,7 +520,9 @@ export async function importGscData(
   if (!categories || categories.length === 0) {
     return {
       status: "error",
-      message: "Importe d'abord les URL de catégories : sans elles, rien à rapprocher.",
+      message:
+        "Aucune catégorie à rapprocher. Coche « créer les catégories détectées » " +
+        "ou importe d'abord la liste des URL.",
     };
   }
 
@@ -539,7 +561,8 @@ export async function importGscData(
   return {
     status: "ok",
     message:
-      `${rows.length} lignes lues, ${grouped.size} URL distinctes, ` +
+      `${rows.length} lignes lues, ${grouped.size} URL distinctes. ` +
+      (created > 0 ? `${created} catégorie(s) créée(s) depuis l'export. ` : "") +
       `${matched} catégorie(s) sur ${categories.length} enrichie(s).` +
       (matched === 0
         ? " Aucune correspondance : vérifie que les URL de l'export sont bien celles des catégories."
