@@ -12,6 +12,13 @@ import {
 } from "@/lib/generate";
 import { renderCategoryHtml, renderCategoryText } from "@/lib/render";
 import { extractFromUrl, ExtractionError } from "@/lib/extract";
+import {
+  parseGscCsv,
+  groupByPage,
+  findCannibalization,
+  urlKey,
+  GscParseError,
+} from "@/lib/gsc";
 
 async function requireUser() {
   const supabase = await createClient();
@@ -87,7 +94,6 @@ export async function saveCategorySource(formData: FormData) {
   const { error } = await supabase
     .from("categories")
     .update({
-      target_keyword: optionalText(formData, "target_keyword"),
       source_title: optionalText(formData, "source_title"),
       source_meta_description: optionalText(formData, "source_meta_description"),
       source_h1: optionalText(formData, "source_h1"),
@@ -95,14 +101,9 @@ export async function saveCategorySource(formData: FormData) {
     })
     .eq("id", categoryId);
 
-  if (error) {
-    throw new Error(
-      error.code === "23505"
-        ? "Ce mot-clé est déjà attribué à une autre catégorie du projet. " +
-          "Un mot-clé principal ne peut cibler qu'une seule page, sinon les deux se cannibalisent."
-        : `Enregistrement impossible : ${error.message}`,
-    );
-  }
+  // Ce formulaire ne touche plus aucune colonne sous contrainte d'unicité :
+  // le mot-clé se règle dans le bloc « Mots-clés et brief ».
+  if (error) throw new Error(`Enregistrement impossible : ${error.message}`);
 
   revalidatePath(`/categories/${categoryId}`);
 }
@@ -181,6 +182,11 @@ export async function runMoulinette(
     breadcrumb?: string[];
   };
 
+  const gsc = (category.gsc_data ?? {}) as {
+    queries?: { query: string; impressions: number; position: number }[];
+  };
+  const gscQueries = gsc.queries ?? [];
+
   let content;
   try {
     content = await generateCategoryContent({
@@ -190,6 +196,10 @@ export async function runMoulinette(
       categoryName: category.name,
       categoryUrl: category.url,
       keyword,
+      secondaryKeywords: category.secondary_keywords ?? [],
+      fanQueries: category.fan_queries ?? [],
+      categoryBrief: category.brief,
+      gscQueries: gscQueries.slice(0, 25),
       breadcrumb: source.breadcrumb ?? [],
       products: source.products ?? [],
       facets: source.facets ?? [],
@@ -359,4 +369,217 @@ export async function saveProjectBrief(formData: FormData) {
   if (error) throw new Error(`Enregistrement impossible : ${error.message}`);
 
   revalidatePath(`/projects/${projectId}`);
+}
+
+/* ------------------------------------------------ import en masse des URL */
+
+export type BulkImportState = {
+  status: "idle" | "ok" | "error";
+  message: string;
+};
+
+/** Une ligne par catégorie : `URL` ou `URL | Nom` ou `URL<tab>Nom`. */
+function parseUrlList(raw: string): { url: string; name: string }[] {
+  const out: { url: string; name: string }[] = [];
+
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+
+    const [urlPart, ...rest] = trimmed.split(/\s*[|\t;]\s*/);
+    const url = urlPart.trim();
+    if (!/^https?:\/\//i.test(url)) continue;
+
+    const explicitName = rest.join(" ").trim();
+    let name = explicitName;
+
+    if (!name) {
+      // Dérive un nom lisible du dernier segment : "13-grossiste-bijoux-pro" -> "Grossiste bijoux pro"
+      try {
+        const segment = new URL(url).pathname.split("/").filter(Boolean).pop() ?? url;
+        const words = segment.replace(/^\d+[-_]/, "").replace(/[-_]+/g, " ").trim();
+        name = words.charAt(0).toUpperCase() + words.slice(1);
+      } catch {
+        name = url;
+      }
+    }
+
+    out.push({ url, name: name || url });
+  }
+
+  return out;
+}
+
+export async function importCategories(
+  _prev: BulkImportState,
+  formData: FormData,
+): Promise<BulkImportState> {
+  const { supabase } = await requireUser();
+
+  const projectId = text(formData, "project_id");
+  const raw = String(formData.get("urls") ?? "");
+  if (!projectId) return { status: "error", message: "Projet manquant." };
+
+  const parsed = parseUrlList(raw);
+  if (parsed.length === 0) {
+    return {
+      status: "error",
+      message: "Aucune URL valide détectée. Une URL complète par ligne (http/https).",
+    };
+  }
+
+  // upsert plutôt qu'insert : réimporter la liste ne crée pas de doublons.
+  const { error, count } = await supabase
+    .from("categories")
+    .upsert(
+      parsed.map((item) => ({
+        project_id: projectId,
+        url: item.url,
+        name: item.name,
+      })),
+      { onConflict: "project_id,url", ignoreDuplicates: true, count: "exact" },
+    );
+
+  if (error) {
+    return { status: "error", message: `Import impossible : ${error.message}` };
+  }
+
+  revalidatePath(`/projects/${projectId}`);
+  return {
+    status: "ok",
+    message: `${parsed.length} URL traitées, ${count ?? 0} catégorie(s) ajoutée(s). Les URL déjà présentes ont été ignorées.`,
+  };
+}
+
+/* --------------------------------------------------------- import des GSC */
+
+export type GscImportState = {
+  status: "idle" | "ok" | "error";
+  message: string;
+  cannibalization?: { query: string; pages: string[] }[];
+};
+
+export async function importGscData(
+  _prev: GscImportState,
+  formData: FormData,
+): Promise<GscImportState> {
+  const { supabase } = await requireUser();
+
+  const projectId = text(formData, "project_id");
+  if (!projectId) return { status: "error", message: "Projet manquant." };
+
+  const file = formData.get("file");
+  const pasted = String(formData.get("csv") ?? "").trim();
+
+  let content = pasted;
+  if (!content && file instanceof File && file.size > 0) {
+    content = await file.text();
+  }
+  if (!content) {
+    return { status: "error", message: "Dépose un fichier CSV ou colle son contenu." };
+  }
+
+  let rows;
+  try {
+    rows = parseGscCsv(content);
+  } catch (error) {
+    if (error instanceof GscParseError) {
+      return { status: "error", message: error.message };
+    }
+    return { status: "error", message: (error as Error).message };
+  }
+
+  const { data: categories, error: readError } = await supabase
+    .from("categories")
+    .select("id, url")
+    .eq("project_id", projectId);
+
+  if (readError) {
+    return { status: "error", message: `Lecture des catégories impossible : ${readError.message}` };
+  }
+  if (!categories || categories.length === 0) {
+    return {
+      status: "error",
+      message: "Importe d'abord les URL de catégories : sans elles, rien à rapprocher.",
+    };
+  }
+
+  const grouped = groupByPage(rows);
+  let matched = 0;
+
+  for (const category of categories) {
+    const queries = grouped.get(urlKey(category.url));
+    if (!queries || queries.length === 0) continue;
+
+    const { error: updateError } = await supabase
+      .from("categories")
+      .update({
+        gsc_data: { queries: queries.slice(0, 100) },
+        gsc_fetched_at: new Date().toISOString(),
+      })
+      .eq("id", category.id);
+
+    if (!updateError) matched += 1;
+  }
+
+  // On ne signale que les conflits qui concernent au moins une catégorie suivie.
+  const tracked = new Set(categories.map((category) => urlKey(category.url)));
+  const cannibalization = findCannibalization(rows)
+    .filter((conflict) => conflict.pages.some((page) => tracked.has(urlKey(page.page))))
+    .slice(0, 12)
+    .map((conflict) => ({
+      query: conflict.query,
+      pages: conflict.pages.map(
+        (page) => `${page.page} (${page.impressions} impr., pos. ${page.position.toFixed(1)})`,
+      ),
+    }));
+
+  revalidatePath(`/projects/${projectId}`);
+
+  return {
+    status: "ok",
+    message:
+      `${rows.length} lignes lues, ${grouped.size} URL distinctes, ` +
+      `${matched} catégorie(s) sur ${categories.length} enrichie(s).` +
+      (matched === 0
+        ? " Aucune correspondance : vérifie que les URL de l'export sont bien celles des catégories."
+        : ""),
+    cannibalization,
+  };
+}
+
+/* ------------------------------------------------ mots-clés et brief page */
+
+export async function saveCategoryKeywords(formData: FormData) {
+  const { supabase } = await requireUser();
+
+  const categoryId = text(formData, "category_id");
+  if (!categoryId) return;
+
+  const list = (key: string): string[] =>
+    String(formData.get(key) ?? "")
+      .split(/[\n,;]+/)
+      .map((value) => value.trim())
+      .filter(Boolean);
+
+  const { error } = await supabase
+    .from("categories")
+    .update({
+      target_keyword: optionalText(formData, "target_keyword"),
+      secondary_keywords: list("secondary_keywords"),
+      fan_queries: list("fan_queries"),
+      brief: optionalText(formData, "brief"),
+    })
+    .eq("id", categoryId);
+
+  if (error) {
+    throw new Error(
+      error.code === "23505"
+        ? "Ce mot-clé principal est déjà attribué à une autre catégorie du projet. " +
+          "Un mot-clé ne peut cibler qu'une seule page, sinon les deux se cannibalisent."
+        : `Enregistrement impossible : ${error.message}`,
+    );
+  }
+
+  revalidatePath(`/categories/${categoryId}`);
 }

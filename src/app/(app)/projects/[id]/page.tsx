@@ -12,6 +12,7 @@ import {
   inputClass,
 } from "@/components/ui";
 import { createCategory, saveProjectBrief } from "../../actions";
+import { ImportCategoriesForm, ImportGscForm } from "./import-forms";
 
 export default async function ProjectPage({
   params,
@@ -119,7 +120,21 @@ export default async function ProjectPage({
         </form>
       </Card>
 
-      <Card title="Ajouter une catégorie">
+      <Card
+        title="Importer les URL de catégories"
+        description="Colle la liste complète en une fois. Réimporter la même liste ne crée pas de doublons."
+      >
+        <ImportCategoriesForm projectId={project.id} />
+      </Card>
+
+      <Card
+        title="Importer les données Search Console"
+        description="Rapproche les requêtes de chaque URL et signale les cannibalisations existantes."
+      >
+        <ImportGscForm projectId={project.id} />
+      </Card>
+
+      <Card title="Ajouter une catégorie à l'unité">
         <form action={createCategory} className="space-y-4">
           <input type="hidden" name="project_id" value={project.id} />
           <div className="grid gap-4 sm:grid-cols-3">

@@ -54,6 +54,11 @@ export type Database = {
           source_content: string | null;
           source_data: Json;
           source_fetched_at: string | null;
+          secondary_keywords: string[];
+          fan_queries: string[];
+          brief: string | null;
+          gsc_data: Json;
+          gsc_fetched_at: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -70,6 +75,11 @@ export type Database = {
           source_content?: string | null;
           source_data?: Json;
           source_fetched_at?: string | null;
+          secondary_keywords?: string[];
+          fan_queries?: string[];
+          brief?: string | null;
+          gsc_data?: Json;
+          gsc_fetched_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };

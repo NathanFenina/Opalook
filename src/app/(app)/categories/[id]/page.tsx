@@ -18,6 +18,7 @@ import { deleteCategory, saveCategorySource } from "../../actions";
 import { ImportForm } from "./import-form";
 import { GenerateForm } from "./generate-form";
 import { CopyButton } from "./copy-button";
+import { KeywordsForm, type GscQuery } from "./keywords-form";
 
 // La rédaction par Claude prend nettement plus que la durée par défaut d'une
 // fonction Vercel : on demande explicitement la fenêtre maximale.
@@ -79,6 +80,8 @@ export default async function CategoryPage({
 
   const project = category.projects as { id: string; name: string } | null;
   const source = sourceData(category.source_data);
+  const gsc = (category.gsc_data ?? {}) as { queries?: GscQuery[] };
+  const suggestions = gsc.queries ?? [];
 
   const { data: optimizations, error } = await supabase
     .from("optimizations")
@@ -145,6 +148,26 @@ export default async function CategoryPage({
         </div>
       </Card>
 
+      <Card
+        title="Mots-clés et brief"
+        description="Ce bloc pilote entièrement la rédaction : mot-clé principal, secondaires, fan queries et consignes."
+      >
+        <KeywordsForm
+          categoryId={category.id}
+          initialKeyword={category.target_keyword ?? ""}
+          initialSecondary={category.secondary_keywords ?? []}
+          initialFanQueries={category.fan_queries ?? []}
+          initialBrief={category.brief ?? ""}
+          suggestions={suggestions}
+        />
+        {category.gsc_fetched_at && (
+          <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
+            Données GSC importées le{" "}
+            {new Date(category.gsc_fetched_at).toLocaleString("fr-FR")}
+          </p>
+        )}
+      </Card>
+
       {Boolean(source.products?.length || source.facets?.length) && (
         <Card
           title="Matière première"
@@ -193,22 +216,13 @@ export default async function CategoryPage({
       >
         <form action={saveCategorySource} className="space-y-4">
           <input type="hidden" name="category_id" value={category.id} />
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Mot-clé cible">
-              <input
-                name="target_keyword"
-                defaultValue={category.target_keyword ?? ""}
-                className={inputClass}
-              />
-            </Field>
-            <Field label="H1 actuel">
-              <input
-                name="source_h1"
-                defaultValue={category.source_h1 ?? ""}
-                className={inputClass}
-              />
-            </Field>
-          </div>
+          <Field label="H1 actuel">
+            <input
+              name="source_h1"
+              defaultValue={category.source_h1 ?? ""}
+              className={inputClass}
+            />
+          </Field>
           <Field label="Title actuel">
             <input
               name="source_title"

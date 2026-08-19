@@ -71,6 +71,14 @@ export type GenerationInput = {
   categoryName: string;
   categoryUrl: string;
   keyword: string;
+  /** Mots-clés secondaires validés, à couvrir dans le corps du texte. */
+  secondaryKeywords: string[];
+  /** Fan queries : questions et requêtes satellites à traiter, notamment en FAQ. */
+  fanQueries: string[];
+  /** Consignes opérationnelles propres à cette catégorie. */
+  categoryBrief: string | null;
+  /** Requêtes sur lesquelles l'URL est déjà positionnée, d'après GSC. */
+  gscQueries: { query: string; impressions: number; position: number }[];
   breadcrumb: string[];
   products: string[];
   facets: { name: string; values: string[] }[];
@@ -108,10 +116,19 @@ site. Ton texte ne doit ni les cibler, ni réutiliser leur structure, ni
 reprendre leurs tournures. Tu dois retenir un angle éditorial NON UTILISÉ parmi
 ceux proposés, et construire tout le plan autour de cet angle.
 
-MOT-CLÉ
+MOTS-CLÉS
 Le mot-clé principal apparaît dans le title, dans le H1, et dans la première
-phrase de l'introduction. Ensuite, varie : synonymes et longue traîne. Vise 3 à
-8 occurrences de la forme exacte sur l'ensemble du texte, jamais davantage.
+phrase de l'introduction. Vise 3 à 8 occurrences de sa forme exacte sur
+l'ensemble du texte, jamais davantage.
+Les mots-clés secondaires se placent dans les intertitres et le corps du texte,
+une à deux fois chacun, sans forcer la formulation.
+Les fan queries sont des questions satellites : traite-les en FAQ ou en section
+dédiée, en reprenant la formulation de la requête dans l'intertitre.
+
+POSITIONS ACQUISES
+Quand des requêtes déjà positionnées te sont fournies, renforce-les : ce sont
+des gains rapides. Une requête en position 8 à 20 mérite d'être couverte
+explicitement par une section ou une question de FAQ.
 
 STYLE
 Français naturel, phrases de longueur variable, pas de superlatifs creux ("le
@@ -141,7 +158,25 @@ ${input.brief ? `Brief éditorial : ${input.brief}` : "Brief éditorial : non re
 Nom : ${input.categoryName}
 URL : ${input.categoryUrl}
 Mot-clé principal : ${input.keyword}
+Mots-clés secondaires : ${input.secondaryKeywords.join(" | ") || "(aucun)"}
+Fan queries à traiter : ${input.fanQueries.join(" | ") || "(aucune)"}
 Fil d'ariane : ${input.breadcrumb.join(" > ") || "(non relevé)"}
+
+# Consignes opérationnelles pour CETTE catégorie
+${input.categoryBrief || "(aucune consigne particulière)"}
+
+# Requêtes sur lesquelles cette URL est déjà positionnée (Search Console)
+${
+    input.gscQueries.length > 0
+      ? input.gscQueries
+          .slice(0, 25)
+          .map(
+            (row) =>
+              `- ${row.query} — ${row.impressions} impressions, position ${row.position.toFixed(1)}`,
+          )
+          .join("\n")
+      : "- (aucune donnée importée)"
+  }
 
 # Produits réellement présents dans cette catégorie
 ${bulletList(input.products, 40)}
