@@ -187,7 +187,14 @@ type InstantPagesResponse = {
     id?: string;
     status_code?: number;
     status_message?: string;
-    result?: { items?: { status_code?: number }[] }[];
+    result?: {
+      crawl_status?: unknown;
+      items?: {
+        status_code?: number;
+        url?: string;
+        meta?: { title?: string };
+      }[];
+    }[];
   }[];
 };
 
@@ -245,6 +252,7 @@ export async function fetchPageHtml(url: string): Promise<string> {
       {
         url,
         store_raw_html: true,
+        enable_javascript: true,
         enable_browser_rendering: true,
         load_resources: true,
         browser_preset: "desktop",
@@ -269,6 +277,20 @@ export async function fetchPageHtml(url: string): Promise<string> {
     );
   }
 
+  // Statut HTTP obtenu par *leur* crawleur sur la page. C'est l'information
+  // décisive : un 403 ici veut dire que la protection les bloque aussi, et donc
+  // qu'aucun repli de ce type ne passera.
+  const crawledItem = task?.result?.[0]?.items?.[0];
+  const crawledStatus = crawledItem?.status_code;
+  if (crawledStatus && crawledStatus >= 400) {
+    throw new SerpError(
+      `Le crawleur DataForSEO a lui aussi reçu ${crawledStatus} sur ${url}. ` +
+        `La protection ne se contourne pas par un changement d'IP : il faut une ` +
+        `autorisation explicite côté site, ou l'API PrestaShop.`,
+      "api",
+    );
+  }
+
   const taskId = task?.id;
   if (!taskId) {
     throw new SerpError("DataForSEO n'a pas renvoyé d'identifiant de tâche.", "empty");
@@ -285,8 +307,14 @@ export async function fetchPageHtml(url: string): Promise<string> {
 
   const html = raw.tasks?.[0]?.result?.[0]?.items?.[0]?.html;
   if (!html) {
+    const rawTask = raw.tasks?.[0];
+    const detail =
+      rawTask?.status_message ??
+      (crawledStatus ? `statut de crawl ${crawledStatus}` : "réponse vide");
     throw new SerpError(
-      `DataForSEO n'a pas renvoyé le HTML de ${url}. La page est peut-être inaccessible depuis leurs crawleurs aussi.`,
+      `DataForSEO a bien crawlé ${url}${
+        crawledItem?.meta?.title ? ` (titre : « ${crawledItem.meta.title} »)` : ""
+      } mais n'a pas restitué le HTML brut : ${detail}.`,
       "empty",
     );
   }

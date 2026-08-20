@@ -20,6 +20,34 @@ import { z } from "zod";
 
 export const GENERATION_MODEL = "claude-opus-5";
 
+/**
+ * Noms acceptés pour la clé Anthropic, par ordre de préférence.
+ *
+ * Le SDK ne lit que `ANTHROPIC_API_KEY`. Exiger ce nom exact transforme une
+ * faute de nommage en panne opaque : la clé est là, payée, valide, et le
+ * serveur affirme qu'elle est absente. On accepte donc les variantes courantes
+ * et on passe la valeur explicitement au client.
+ */
+const API_KEY_NAMES = [
+  "ANTHROPIC_API_KEY",
+  "CLAUDE_API_KEY",
+  "API_ANTHROPIC",
+  "ANTHROPIC_KEY",
+] as const;
+
+function anthropicApiKey(): string | null {
+  for (const name of API_KEY_NAMES) {
+    const value = process.env[name]?.trim();
+    if (value) return value;
+  }
+  return null;
+}
+
+const MISSING_KEY_MESSAGE =
+  `Aucune clé Anthropic trouvée sur le serveur. Noms acceptés : ${API_KEY_NAMES.join(", ")}. ` +
+  `Vérifie l'état réel sur /api/health, et rappelle-toi que les variables Vercel ne sont ` +
+  `lues qu'au déploiement.`;
+
 /** Angles éditoriaux disponibles. Deux catégories d'un même projet n'en partagent jamais un. */
 export const EDITORIAL_ANGLES = [
   "guide de choix par usage",
@@ -268,16 +296,10 @@ Rédige maintenant le contenu de la catégorie.`;
 export async function generateCategoryContent(
   input: GenerationInput,
 ): Promise<CategoryContent> {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    throw new GenerationError(
-      "ANTHROPIC_API_KEY absente du serveur. Les variables Vercel ne sont lues qu'au " +
-        "déploiement : si tu viens de l'ajouter, il faut redéployer pour qu'elle soit prise " +
-        "en compte. Vérifie l'état réel sur /api/health.",
-      "no_key",
-    );
-  }
+  const apiKey = anthropicApiKey();
+  if (!apiKey) throw new GenerationError(MISSING_KEY_MESSAGE, "no_key");
 
-  const client = new Anthropic();
+  const client = new Anthropic({ apiKey });
 
   try {
     const response = await client.messages.parse({
@@ -385,15 +407,10 @@ RÈGLES
 export async function suggestKeywords(
   input: SuggestionInput,
 ): Promise<KeywordSuggestion> {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    throw new GenerationError(
-      "ANTHROPIC_API_KEY absente du serveur. Les variables Vercel ne sont lues qu'au " +
-        "déploiement : si tu viens de l'ajouter, redéploie. Vérifie sur /api/health.",
-      "no_key",
-    );
-  }
+  const apiKey = anthropicApiKey();
+  if (!apiKey) throw new GenerationError(MISSING_KEY_MESSAGE, "no_key");
 
-  const client = new Anthropic();
+  const client = new Anthropic({ apiKey });
 
   const prompt = `# Site
 ${input.brand}
