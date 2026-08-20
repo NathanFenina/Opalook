@@ -270,7 +270,9 @@ export async function generateCategoryContent(
 ): Promise<CategoryContent> {
   if (!process.env.ANTHROPIC_API_KEY) {
     throw new GenerationError(
-      "ANTHROPIC_API_KEY absente. Ajoute-la dans les variables d'environnement Vercel (Production et Preview), puis redéploie.",
+      "ANTHROPIC_API_KEY absente du serveur. Les variables Vercel ne sont lues qu'au " +
+        "déploiement : si tu viens de l'ajouter, il faut redéployer pour qu'elle soit prise " +
+        "en compte. Vérifie l'état réel sur /api/health.",
       "no_key",
     );
   }
@@ -385,7 +387,8 @@ export async function suggestKeywords(
 ): Promise<KeywordSuggestion> {
   if (!process.env.ANTHROPIC_API_KEY) {
     throw new GenerationError(
-      "ANTHROPIC_API_KEY absente. Ajoute-la dans les variables d'environnement Vercel.",
+      "ANTHROPIC_API_KEY absente du serveur. Les variables Vercel ne sont lues qu'au " +
+        "déploiement : si tu viens de l'ajouter, redéploie. Vérifie sur /api/health.",
       "no_key",
     );
   }
