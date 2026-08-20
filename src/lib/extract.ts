@@ -14,7 +14,14 @@
 
 import * as cheerio from "cheerio";
 
-import { fetchPageHtml, hasDataForSeoCredentials } from "@/lib/dataforseo";
+import {
+  fetchPageHtml as fetchViaDataForSeo,
+  hasDataForSeoCredentials,
+} from "@/lib/dataforseo";
+import {
+  fetchPageHtml as fetchViaFirecrawl,
+  hasFirecrawlCredentials,
+} from "@/lib/firecrawl";
 
 export type Facet = { name: string; values: string[] };
 
@@ -325,24 +332,43 @@ export async function extractFromUrl(rawUrl: string): Promise<Extraction> {
   const diagnostics: string[] = [];
 
   if (html === null) {
-    if (!hasDataForSeoCredentials()) {
-      throw new ExtractionError(
-        `Accès direct refusé (${directFailure}). Aucun repli possible : DataForSEO n'est pas ` +
-          `configuré. Renseigne DATAFORSEO_LOGIN et DATAFORSEO_PASSWORD pour que la page soit ` +
-          `récupérée via leur infrastructure de crawl.`,
-        "blocked",
-      );
+    // Cascade de replis, du plus efficace au moins coûteux. Firecrawl d'abord :
+    // proxies résidentiels et rendu navigateur, c'est son métier. DataForSEO
+    // ensuite, déjà payé pour la SERP.
+    const fallbacks: { name: string; available: boolean; fetch: () => Promise<string> }[] = [
+      {
+        name: "Firecrawl",
+        available: hasFirecrawlCredentials(),
+        fetch: () => fetchViaFirecrawl(rawUrl),
+      },
+      {
+        name: "DataForSEO",
+        available: hasDataForSeoCredentials(),
+        fetch: () => fetchViaDataForSeo(rawUrl),
+      },
+    ];
+
+    const attempts: string[] = [];
+
+    for (const fallback of fallbacks) {
+      if (!fallback.available) {
+        attempts.push(`${fallback.name} non configuré`);
+        continue;
+      }
+      try {
+        html = await fallback.fetch();
+        diagnostics.push(
+          `accès : direct refusé (${directFailure}), page récupérée via ${fallback.name}`,
+        );
+        break;
+      } catch (error) {
+        attempts.push(`${fallback.name} : ${(error as Error).message}`);
+      }
     }
 
-    try {
-      html = await fetchPageHtml(rawUrl);
-      diagnostics.push(
-        `accès : direct refusé (${directFailure}), page récupérée via DataForSEO`,
-      );
-    } catch (error) {
+    if (html === null) {
       throw new ExtractionError(
-        `Accès direct refusé (${directFailure}), et le repli DataForSEO a échoué : ` +
-          `${(error as Error).message}`,
+        `Accès direct refusé (${directFailure}). Replis épuisés — ${attempts.join(" | ")}`,
         "blocked",
       );
     }

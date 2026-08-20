@@ -43,6 +43,7 @@ export async function GET() {
         describe("ANTHROPIC_API_KEY"),
         describe("DATAFORSEO_LOGIN"),
         describe("DATAFORSEO_PASSWORD"),
+        describe("FIRECRAWL_API_KEY"),
         describe("EXTRACT_BYPASS_HEADER"),
         describe("EXTRACT_BYPASS_TOKEN"),
         describe("NEXT_PUBLIC_SUPABASE_URL"),
@@ -52,7 +53,7 @@ export async function GET() {
       // nom approchant — faute de frappe, tiret au lieu du souligné, espace
       // final — qui autrement resterait introuvable.
       nomsApprochants: Object.keys(process.env)
-        .filter((key) => /anthropic|claude|dataforseo|bypass/i.test(key))
+        .filter((key) => /anthropic|claude|dataforseo|firecrawl|bypass/i.test(key))
         .sort(),
     },
     { headers: { "Cache-Control": "no-store" } },
