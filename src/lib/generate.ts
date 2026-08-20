@@ -102,7 +102,12 @@ const AnalysisSchema = z.object({
 export const CategoryContentSchema = z.object({
   analysis: AnalysisSchema,
   title: z.string().describe("Balise title, 50 à 60 caractères, mot-clé en tête"),
-  metaDescription: z.string().describe("Meta description, 140 à 160 caractères"),
+  metaDescription: z
+    .string()
+    .describe(
+      "Meta description, 140 à 158 caractères espaces compris — jamais plus de 158, " +
+        "Google tronque au-delà",
+    ),
   h1: z.string().describe("H1 de la page, contient le mot-clé principal"),
   intro: z
     .string()
@@ -177,8 +182,18 @@ ceux proposés, et construire tout le plan autour de cet angle.
 
 MOTS-CLÉS
 Le mot-clé principal apparaît dans le title, dans le H1, et dans la première
-phrase de l'introduction. Vise 3 à 8 occurrences de sa forme exacte sur
-l'ensemble du texte, jamais davantage.
+phrase de l'introduction.
+
+Sa FORME EXACTE, mot pour mot et dans le même ordre, doit apparaître entre 4 et
+8 fois dans le corps du texte — intertitres compris. « grossiste en bijoux
+pierres naturelles » n'est PAS la forme exacte de « grossiste bijoux pierres
+naturelles » : un mot inséré casse la correspondance. Les variantes et
+synonymes viennent EN PLUS de ce compte, jamais à la place.
+
+Avant de rendre ta réponse, relis-toi et compte réellement les occurrences de la
+forme exacte. Si tu en as moins de 4, réécris les passages concernés pour y
+placer la formulation exacte là où elle reste naturelle : un intertitre, une
+première phrase de section, une question de FAQ.
 Les mots-clés secondaires se placent dans les intertitres et le corps du texte,
 une à deux fois chacun, sans forcer la formulation.
 Les fan queries sont des questions satellites : traite-les en FAQ ou en section
@@ -253,7 +268,21 @@ ${
       : "- (aucune donnée importée)"
   }
 
-# Produits réellement présents dans cette catégorie
+${
+    input.products.length === 0 && input.facets.length === 0
+      ? `# ⚠ LA PAGE N'A PAS PU ÊTRE RELEVÉE
+Ni les produits ni les facettes de filtres ne sont disponibles pour cette
+catégorie. Tu écris donc sans savoir ce que le catalogue contient réellement.
+
+Conséquence sur ta rédaction : ne nomme aucune matière, pierre, taille,
+finition, référence ou gamme de prix comme si elle était présente au catalogue.
+Reste au niveau du métier et de la mécanique d'achat, qui ne dépendent pas de
+l'assortiment. Et dans \`missingEntities\`, ne liste que ce que tu as vu chez les
+concurrents dans la SERP, en aucun cas des entités supposées du catalogue.
+
+`
+      : ""
+  }# Produits réellement présents dans cette catégorie
 ${bulletList(input.products, 40)}
 
 # Facettes de filtres disponibles sur la page

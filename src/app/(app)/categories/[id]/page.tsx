@@ -97,6 +97,7 @@ export default async function CategoryPage({
   const latest = optimizations?.[0];
 
   const payload = (latest?.payload ?? {}) as {
+    groundedInPage?: boolean;
     structured?: {
       analysis?: {
         audience: string;
@@ -343,6 +344,17 @@ export default async function CategoryPage({
           } · ${new Date(latest.created_at).toLocaleString("fr-FR")}`}
         >
           <div className="space-y-4">
+            {payload.groundedInPage === false && (
+              <p className="rounded-lg bg-amber-500/10 px-3 py-3 text-sm text-amber-700 dark:text-amber-400">
+                <span className="font-medium">
+                  Texte rédigé sans le relevé de la page.
+                </span>{" "}
+                Les produits et les facettes de filtres n&apos;ont pas pu être lus : aucune
+                matière, référence ou gamme de prix citée ici n&apos;a été vérifiée contre le
+                catalogue. Relance après avoir débloqué l&apos;accès à la page pour obtenir un
+                texte réellement ancré.
+              </p>
+            )}
             {analysis && (
               <div
                 className={`space-y-2 rounded-lg px-3 py-3 text-sm ${

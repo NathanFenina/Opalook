@@ -11,7 +11,11 @@ export const LIMITS = {
   title: { min: 45, max: 60 },
   metaDescription: { min: 140, max: 160 },
   h1: { min: 20, max: 70 },
-  content: { min: 600, max: 2500 },
+  // Une page catégorie B2B qui affronte des grossistes établis a besoin de
+  // volume : les bornes d'un texte d'introduction (600–2500) sanctionnaient à
+  // tort un contenu de 8 000 caractères pourtant structuré et utile. On garde
+  // un plancher, et un plafond assez haut pour ne signaler que le délayage.
+  content: { min: 1200, max: 9000 },
 } as const;
 
 export type CheckStatus = "ok" | "warn" | "fail";

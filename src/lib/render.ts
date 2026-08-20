@@ -54,15 +54,24 @@ export function renderCategoryHtml(
   return parts.join("\n");
 }
 
-/** Version texte, pour le scoring et le calcul de similarité. */
+/**
+ * Version texte, pour le scoring et le calcul de similarité.
+ *
+ * Les intertitres gardent leur marqueur `##` : sans lui, le contrôle de
+ * structure du barème ne les voit pas et conclut à tort que le texte n'est pas
+ * structuré, alors que le HTML rendu contient bien des H2.
+ */
 export function renderCategoryText(content: CategoryContent): string {
   const parts: string[] = [content.intro];
 
   for (const section of content.sections) {
-    parts.push(section.heading, ...section.paragraphs, ...section.bullets);
+    parts.push(`## ${section.heading}`, ...section.paragraphs, ...section.bullets);
   }
-  for (const item of content.faq) {
-    parts.push(item.question, item.answer);
+  if (content.faq.length > 0) {
+    parts.push("## Questions fréquentes");
+    for (const item of content.faq) {
+      parts.push(`### ${item.question}`, item.answer);
+    }
   }
 
   return parts.join("\n\n");

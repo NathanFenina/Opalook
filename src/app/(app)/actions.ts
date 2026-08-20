@@ -223,7 +223,12 @@ export async function runMoulinette(
     score,
     engine: GENERATION_MODEL,
     editorial_angle: content.editorialAngle,
-    payload: { checks, structured: content, plain },
+    payload: {
+      checks,
+      structured: content,
+      plain,
+      groundedInPage: (source.products?.length ?? 0) > 0,
+    },
     created_by: user.id,
   });
 
@@ -1148,7 +1153,16 @@ export async function runPipeline(
     score,
     engine: GENERATION_MODEL,
     editorial_angle: content.editorialAngle,
-    payload: { checks, structured: content, plain, steps },
+    payload: {
+      checks,
+      structured: content,
+      plain,
+      steps,
+      // Une version rédigée sans relevé de page ne peut pas être jugée comme
+      // une autre : les matières et références qu'elle cite ne sont pas
+      // vérifiées contre le catalogue.
+      groundedInPage: (source.products?.length ?? 0) > 0,
+    },
     created_by: user.id,
   });
 
