@@ -15,6 +15,7 @@ import { StatusSelect } from "@/components/status-select";
 import { deleteCategory } from "../../actions";
 import { ImportForm } from "./import-form";
 import { GenerateForm } from "./generate-form";
+import { PipelineForm } from "./pipeline-form";
 import { CopyButton } from "./copy-button";
 import { KeywordsForm, type GscQuery } from "./keywords-form";
 import { SerpForm } from "./serp-form";
@@ -94,6 +95,20 @@ export default async function CategoryPage({
 
   const latest = optimizations?.[0];
 
+  const payload = (latest?.payload ?? {}) as {
+    structured?: {
+      analysis?: {
+        audience: string;
+        intentVerdict: string;
+        intentMatch: boolean;
+        semanticGaps: string[];
+        missingEntities: string[];
+        differentiation: string;
+      };
+    };
+  };
+  const analysis = payload.structured?.analysis;
+
   // La page d'origine n'est notée que si on l'a effectivement relevée :
   // auditer un formulaire vide ne produirait que des feux rouges sans information.
   const hasSource = Boolean(
@@ -166,9 +181,25 @@ export default async function CategoryPage({
       </MetricRow>
 
       <Card
-        title="Données de la page"
-        description="Va chercher les balises, le texte, les produits et les filtres directement sur l'URL. C'est ce qui rend le texte spécifique à cette catégorie."
+        title="Traitement complet"
+        description="Relève la page, analyse la concurrence, déduit le champ sémantique et rédige — en une fois."
       >
+        <PipelineForm
+          categoryId={category.id}
+          initialBrief={category.brief ?? ""}
+          hasVersion={Boolean(latest)}
+        />
+      </Card>
+
+      <details className="space-y-8">
+        <summary className="cursor-pointer text-sm font-medium text-slate-600 select-none hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100">
+          Étapes détaillées, à lancer séparément
+        </summary>
+        <div className="mt-4 space-y-8">
+          <Card
+            title="Données de la page"
+            description="Va chercher les balises, le texte, les produits et les filtres directement sur l'URL."
+          >
         <div className="space-y-3">
           <ImportForm categoryId={category.id} />
           {category.source_fetched_at && (
@@ -300,6 +331,8 @@ export default async function CategoryPage({
           <GenerateForm categoryId={category.id} hasVersion={Boolean(latest)} />
         </div>
       </Card>
+        </div>
+      </details>
 
       {latest ? (
         <Card
@@ -309,6 +342,42 @@ export default async function CategoryPage({
           } · ${new Date(latest.created_at).toLocaleString("fr-FR")}`}
         >
           <div className="space-y-4">
+            {analysis && (
+              <div
+                className={`space-y-2 rounded-lg px-3 py-3 text-sm ${
+                  analysis.intentMatch
+                    ? "bg-slate-50 dark:bg-slate-950"
+                    : "bg-amber-50 dark:bg-amber-950/40"
+                }`}
+              >
+                <p className="font-medium">
+                  {analysis.intentMatch
+                    ? "Intention compatible avec une page catégorie"
+                    : "Intention incompatible avec une page catégorie marchande"}
+                </p>
+                <p className="text-slate-600 dark:text-slate-400">{analysis.intentVerdict}</p>
+                <p className="text-slate-600 dark:text-slate-400">
+                  <span className="font-medium">Public visé : </span>
+                  {analysis.audience}
+                </p>
+                {analysis.semanticGaps.length > 0 && (
+                  <p className="text-slate-600 dark:text-slate-400">
+                    <span className="font-medium">Manques comblés : </span>
+                    {analysis.semanticGaps.join(" · ")}
+                  </p>
+                )}
+                {analysis.missingEntities.length > 0 && (
+                  <p className="text-slate-600 dark:text-slate-400">
+                    <span className="font-medium">Entités intégrées : </span>
+                    {analysis.missingEntities.join(" · ")}
+                  </p>
+                )}
+                <p className="text-slate-600 dark:text-slate-400">
+                  <span className="font-medium">Différenciation : </span>
+                  {analysis.differentiation}
+                </p>
+              </div>
+            )}
             <Output label="Title" value={latest.title} />
             <Output label="Meta description" value={latest.meta_description} />
             <Output label="H1 — à reporter sur le nom de la catégorie" value={latest.h1} />

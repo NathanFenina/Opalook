@@ -882,3 +882,296 @@ export async function fetchSerpAction(
         : "Le site n'apparaît pas dans ce classement."),
   };
 }
+
+/* ------------------------------------------------- pipeline complet ------ */
+
+export type PipelineStep = {
+  label: string;
+  status: "ok" | "skipped" | "error";
+  detail: string;
+};
+
+export type PipelineState = {
+  status: "idle" | "ok" | "error";
+  message: string;
+  steps?: PipelineStep[];
+};
+
+/**
+ * Chaîne complète en un clic : relève la page, analyse la concurrence, déduit
+ * le champ sémantique, puis rédige.
+ *
+ * Chaque étape dégrade proprement : si Cloudflare bloque la page ou si
+ * DataForSEO n'est pas configuré, on continue avec ce qu'on a et on le dit dans
+ * le rapport d'étapes. Seule l'absence de mot-clé principal arrête tout, parce
+ * que sans lui il n'y a rien à écrire.
+ */
+export async function runPipeline(
+  _prev: PipelineState,
+  formData: FormData,
+): Promise<PipelineState> {
+  const { supabase, user } = await requireUser();
+
+  const categoryId = text(formData, "category_id");
+  if (!categoryId) return { status: "error", message: "Catégorie manquante." };
+
+  const directives = optionalText(formData, "brief");
+  const steps: PipelineStep[] = [];
+
+  const { data: category, error: readError } = await supabase
+    .from("categories")
+    .select("*, projects(id, name, domain, notes)")
+    .eq("id", categoryId)
+    .single();
+
+  if (readError || !category) {
+    return { status: "error", message: `Catégorie introuvable : ${readError?.message ?? ""}` };
+  }
+
+  const project = category.projects as {
+    id: string;
+    name: string;
+    domain: string | null;
+    notes: string | null;
+  } | null;
+
+  const keyword = (category.target_keyword ?? "").trim();
+  if (!keyword) {
+    return {
+      status: "error",
+      message: "Renseigne d'abord le mot-clé principal : c'est lui qui cadre tout le reste.",
+    };
+  }
+
+  // Les directives saisies dans le formulaire remplacent le brief enregistré.
+  if (directives !== null && directives !== category.brief) {
+    await supabase.from("categories").update({ brief: directives }).eq("id", categoryId);
+  }
+  const categoryBrief = directives ?? category.brief;
+
+  /* --- 1. Relevé de la page ------------------------------------------- */
+
+  let source = (category.source_data ?? {}) as {
+    products?: string[];
+    facets?: { name: string; values: string[] }[];
+    breadcrumb?: string[];
+  };
+  let currentText = category.source_content;
+
+  try {
+    const extraction = await extractFromUrl(category.url);
+    source = {
+      products: extraction.products,
+      facets: extraction.facets,
+      breadcrumb: extraction.breadcrumb,
+    };
+    currentText = extraction.seoText;
+
+    await supabase
+      .from("categories")
+      .update({
+        source_title: extraction.title,
+        source_meta_description: extraction.metaDescription,
+        source_h1: extraction.h1,
+        source_content: extraction.seoText,
+        source_data: {
+          ...source,
+          productCount: extraction.productCount,
+          canonical: extraction.canonical,
+          diagnostics: extraction.diagnostics,
+        },
+        source_fetched_at: new Date().toISOString(),
+      })
+      .eq("id", categoryId);
+
+    steps.push({
+      label: "Relevé de la page",
+      status: "ok",
+      detail: `${extraction.products.length} produits, ${extraction.facets.length} facettes`,
+    });
+  } catch (error) {
+    const message = error instanceof ExtractionError ? error.message : (error as Error).message;
+    steps.push({
+      label: "Relevé de la page",
+      status: "error",
+      detail: `${message} On continue sans les produits ni les filtres.`,
+    });
+  }
+
+  /* --- 2. Analyse de la concurrence ------------------------------------ */
+
+  let serp = (category.serp_data ?? {}) as Partial<SerpAnalysis>;
+
+  try {
+    const analysis = await fetchSerp(keyword, project?.domain ?? null);
+    serp = analysis;
+    await supabase
+      .from("categories")
+      .update({ serp_data: analysis, serp_fetched_at: analysis.fetchedAt })
+      .eq("id", categoryId);
+
+    steps.push({
+      label: "Analyse de la SERP",
+      status: "ok",
+      detail: analysis.ownRank
+        ? `${analysis.results.length} résultats · le site est en position ${analysis.ownRank}`
+        : `${analysis.results.length} résultats · le site n'apparaît pas`,
+    });
+  } catch (error) {
+    const message = error instanceof SerpError ? error.message : (error as Error).message;
+    steps.push({
+      label: "Analyse de la SERP",
+      status: serp.results?.length ? "skipped" : "error",
+      detail: serp.results?.length
+        ? "Échec, mais un relevé précédent est réutilisé."
+        : `${message} On rédige sans la concurrence.`,
+    });
+  }
+
+  /* --- 3. Champ sémantique --------------------------------------------- */
+
+  const gsc = (category.gsc_data ?? {}) as {
+    queries?: { query: string; impressions: number; position: number }[];
+  };
+  const gscQueries = gsc.queries ?? [];
+
+  const { data: siblings } = await supabase
+    .from("categories")
+    .select("id, target_keyword, optimizations(editorial_angle, version)")
+    .eq("project_id", category.project_id)
+    .neq("id", categoryId);
+
+  const takenKeywords: string[] = [];
+  const takenAngles: string[] = [];
+  for (const sibling of siblings ?? []) {
+    if (sibling.target_keyword) takenKeywords.push(sibling.target_keyword);
+    const last = [...(sibling.optimizations ?? [])].sort((a, b) => b.version - a.version)[0];
+    if (last?.editorial_angle && !takenAngles.includes(last.editorial_angle)) {
+      takenAngles.push(last.editorial_angle);
+    }
+  }
+
+  let secondaryKeywords = category.secondary_keywords ?? [];
+  let fanQueries = category.fan_queries ?? [];
+
+  try {
+    const suggestion = await suggestKeywords({
+      brand: project?.name ?? "",
+      brief: project?.notes ?? null,
+      categoryName: category.name,
+      keyword,
+      products: source.products ?? [],
+      facets: source.facets ?? [],
+      gscQueries,
+      takenKeywords,
+    });
+
+    // On complète sans écraser : ce que tu as validé à la main reste prioritaire.
+    const merge = (existing: string[], proposed: string[]) => {
+      const seen = new Set(existing.map((v) => v.toLowerCase()));
+      return [...existing, ...proposed.filter((v) => !seen.has(v.toLowerCase()))];
+    };
+
+    secondaryKeywords = merge(
+      secondaryKeywords,
+      suggestion.secondaryKeywords.map((s) => s.keyword),
+    );
+    fanQueries = merge(fanQueries, suggestion.fanQueries.map((s) => s.query));
+
+    await supabase
+      .from("categories")
+      .update({ secondary_keywords: secondaryKeywords, fan_queries: fanQueries })
+      .eq("id", categoryId);
+
+    steps.push({
+      label: "Champ sémantique",
+      status: "ok",
+      detail: `${suggestion.secondaryKeywords.length} secondaires, ${suggestion.fanQueries.length} fan queries`,
+    });
+  } catch (error) {
+    const message = error instanceof GenerationError ? error.message : (error as Error).message;
+    steps.push({
+      label: "Champ sémantique",
+      status: "error",
+      detail: `${message} On rédige avec les mots-clés déjà validés.`,
+    });
+  }
+
+  /* --- 4. Rédaction ----------------------------------------------------- */
+
+  let content;
+  try {
+    content = await generateCategoryContent({
+      brand: project?.name ?? "",
+      domain: project?.domain ?? null,
+      brief: project?.notes ?? null,
+      categoryName: category.name,
+      categoryUrl: category.url,
+      keyword,
+      secondaryKeywords,
+      fanQueries,
+      categoryBrief,
+      gscQueries: gscQueries.slice(0, 25),
+      serp: serp.results ?? [],
+      ownRank: serp.ownRank ?? null,
+      breadcrumb: source.breadcrumb ?? [],
+      products: source.products ?? [],
+      facets: source.facets ?? [],
+      currentText,
+      takenKeywords,
+      takenAngles,
+    });
+  } catch (error) {
+    const message = error instanceof GenerationError ? error.message : (error as Error).message;
+    steps.push({ label: "Rédaction", status: "error", detail: message });
+    return { status: "error", message, steps };
+  }
+
+  const html = renderCategoryHtml(content);
+  const plain = renderCategoryText(content);
+  const { checks, score } = audit(
+    {
+      title: content.title,
+      metaDescription: content.metaDescription,
+      h1: content.h1,
+      content: plain,
+    },
+    keyword,
+  );
+
+  const { error: insertError } = await supabase.from("optimizations").insert({
+    category_id: categoryId,
+    title: content.title,
+    meta_description: content.metaDescription,
+    h1: content.h1,
+    content: html,
+    score,
+    engine: GENERATION_MODEL,
+    editorial_angle: content.editorialAngle,
+    payload: { checks, structured: content, plain, steps },
+    created_by: user.id,
+  });
+
+  if (insertError) {
+    return { status: "error", message: `Enregistrement impossible : ${insertError.message}`, steps };
+  }
+
+  steps.push({
+    label: "Rédaction",
+    status: "ok",
+    detail: `Angle « ${content.editorialAngle} » · score ${score}/100`,
+  });
+
+  await supabase.from("categories").update({ status: "optimized" }).eq("id", categoryId);
+  revalidatePath(`/categories/${categoryId}`);
+
+  const intentWarning = content.analysis.intentMatch
+    ? ""
+    : " Attention : la SERP de ce mot-clé n'appelle pas une page catégorie marchande — voir le diagnostic d'intention.";
+
+  return {
+    status: "ok",
+    message: `Texte généré, score ${score}/100.${intentWarning}`,
+    steps,
+  };
+}

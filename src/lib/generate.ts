@@ -45,7 +45,34 @@ const FaqItemSchema = z.object({
   answer: z.string(),
 });
 
+/**
+ * Volet d'analyse : ce que le modèle a compris de la SERP et du marché avant
+ * d'écrire. Sans lui, on ne peut pas juger si un texte est faible parce que le
+ * modèle a mal écrit ou parce que le mot-clé était mal choisi.
+ */
+const AnalysisSchema = z.object({
+  audience: z.string().describe("Public réellement visé par la requête, d'après la SERP"),
+  intentVerdict: z
+    .string()
+    .describe(
+      "Intention dominante constatée dans la SERP, et si elle colle à une page catégorie marchande",
+    ),
+  intentMatch: z
+    .boolean()
+    .describe("Vrai si une page catégorie marchande a sa place sur cette requête"),
+  semanticGaps: z
+    .array(z.string())
+    .describe("Concepts traités par les concurrents et absents de la page"),
+  missingEntities: z
+    .array(z.string())
+    .describe("Entités nommées présentes chez les concurrents : matières, normes, labels, régions"),
+  differentiation: z
+    .string()
+    .describe("L'angle apporté qu'aucun des concurrents ne traite"),
+});
+
 export const CategoryContentSchema = z.object({
+  analysis: AnalysisSchema,
   title: z.string().describe("Balise title, 50 à 60 caractères, mot-clé en tête"),
   metaDescription: z.string().describe("Meta description, 140 à 160 caractères"),
   h1: z.string().describe("H1 de la page, contient le mot-clé principal"),
@@ -140,6 +167,15 @@ implicite : ce que traitent les cinq premiers est ce que Google juge pertinent
 sur cette requête. Couvre ce socle, puis démarque-toi — apporte au moins un
 angle qu'aucun d'eux ne traite. Ne recopie jamais leurs formulations, et ne cite
 aucun concurrent nommément.
+
+DIAGNOSTIC D'INTENTION — À FAIRE AVANT D'ÉCRIRE
+Commence par juger si une page catégorie marchande a réellement sa place sur ce
+mot-clé. Si la SERP est occupée par des guides, des définitions ou des articles
+de blog, dis-le franchement en mettant intentMatch à faux et explique pourquoi
+dans intentVerdict. Écris quand même le texte — mais un texte lucide, qui prend
+l'intention constatée au sérieux plutôt que de plaquer un discours commercial
+sur une requête qui n'en veut pas. Un mot-clé mal choisi ne se rattrape pas à la
+rédaction, et le taire ne rend service à personne.
 
 STYLE
 Français naturel, phrases de longueur variable, pas de superlatifs creux ("le
