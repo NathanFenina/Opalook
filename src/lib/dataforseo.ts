@@ -10,7 +10,9 @@
  * archive le résultat en base plutôt que de réinterroger.
  */
 
-const ENDPOINT = "https://api.dataforseo.com/v3/serp/google/organic/live/advanced";
+const SERP_ENDPOINT = "https://api.dataforseo.com/v3/serp/google/organic/live/advanced";
+const INSTANT_PAGES_ENDPOINT = "https://api.dataforseo.com/v3/on_page/instant_pages";
+const RAW_HTML_ENDPOINT = "https://api.dataforseo.com/v3/on_page/raw_html";
 
 /** Codes Google : 2250 = France, 'fr' = français. */
 export const FRANCE_LOCATION_CODE = 2250;
@@ -92,7 +94,7 @@ export async function fetchSerp(
 
   let response: Response;
   try {
-    response = await fetch(ENDPOINT, {
+    response = await fetch(SERP_ENDPOINT, {
       method: "POST",
       headers: {
         Authorization: `Basic ${auth}`,
@@ -169,4 +171,125 @@ export async function fetchSerp(
     results,
     ownRank: own?.rank ?? null,
   };
+}
+
+/* ------------------------------------------- récupération d'une page ----- */
+
+/** Le compte DataForSEO est-il configuré ? Sert à décider d'un repli. */
+export function hasDataForSeoCredentials(): boolean {
+  return Boolean(process.env.DATAFORSEO_LOGIN && process.env.DATAFORSEO_PASSWORD);
+}
+
+type InstantPagesResponse = {
+  status_code?: number;
+  status_message?: string;
+  tasks?: {
+    id?: string;
+    status_code?: number;
+    status_message?: string;
+    result?: { items?: { status_code?: number }[] }[];
+  }[];
+};
+
+type RawHtmlResponse = {
+  status_code?: number;
+  status_message?: string;
+  tasks?: {
+    status_code?: number;
+    status_message?: string;
+    result?: { items?: { html?: string }[] }[];
+  }[];
+};
+
+async function post<T>(endpoint: string, body: unknown, auth: string): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(endpoint, {
+      method: "POST",
+      headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      cache: "no-store",
+    });
+  } catch (error) {
+    throw new SerpError(`DataForSEO injoignable : ${(error as Error).message}`, "api");
+  }
+
+  if (response.status === 401) {
+    throw new SerpError("Identifiants DataForSEO refusés (401).", "no_credentials");
+  }
+  if (!response.ok) {
+    throw new SerpError(`DataForSEO a répondu ${response.status}.`, "api");
+  }
+
+  return (await response.json()) as T;
+}
+
+/**
+ * Récupère le HTML d'une page en passant par l'infrastructure DataForSEO.
+ *
+ * Sert de repli quand le site refuse nos requêtes serveur : leurs crawleurs
+ * sortent depuis leurs propres IP, avec un rendu navigateur, ce qui franchit
+ * les protections anti-robot que nous ne franchissons pas. Le HTML obtenu est
+ * ensuite analysé par nos propres sélecteurs — on ne change que la façon
+ * d'obtenir la page, pas la façon de la lire.
+ *
+ * En deux temps, comme l'impose l'API : un premier appel demande la page en
+ * conservant le HTML brut, un second va le chercher par l'identifiant de tâche.
+ */
+export async function fetchPageHtml(url: string): Promise<string> {
+  const auth = credentials();
+
+  const crawl = await post<InstantPagesResponse>(
+    INSTANT_PAGES_ENDPOINT,
+    [
+      {
+        url,
+        store_raw_html: true,
+        enable_browser_rendering: true,
+        load_resources: true,
+        browser_preset: "desktop",
+        accept_language: "fr-FR",
+      },
+    ],
+    auth,
+  );
+
+  if (crawl.status_code && crawl.status_code !== 20000) {
+    throw new SerpError(
+      `DataForSEO : ${crawl.status_message ?? `code ${crawl.status_code}`}`,
+      "api",
+    );
+  }
+
+  const task = crawl.tasks?.[0];
+  if (task?.status_code && task.status_code !== 20000) {
+    throw new SerpError(
+      `DataForSEO : ${task.status_message ?? `code ${task.status_code}`}`,
+      "api",
+    );
+  }
+
+  const taskId = task?.id;
+  if (!taskId) {
+    throw new SerpError("DataForSEO n'a pas renvoyé d'identifiant de tâche.", "empty");
+  }
+
+  const raw = await post<RawHtmlResponse>(RAW_HTML_ENDPOINT, [{ id: taskId, url }], auth);
+
+  if (raw.status_code && raw.status_code !== 20000) {
+    throw new SerpError(
+      `DataForSEO : ${raw.status_message ?? `code ${raw.status_code}`}`,
+      "api",
+    );
+  }
+
+  const html = raw.tasks?.[0]?.result?.[0]?.items?.[0]?.html;
+  if (!html) {
+    throw new SerpError(
+      `DataForSEO n'a pas renvoyé le HTML de ${url}. La page est peut-être inaccessible depuis leurs crawleurs aussi.`,
+      "empty",
+    );
+  }
+
+  return html;
 }

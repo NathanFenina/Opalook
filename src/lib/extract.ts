@@ -14,6 +14,8 @@
 
 import * as cheerio from "cheerio";
 
+import { fetchPageHtml, hasDataForSeoCredentials } from "@/lib/dataforseo";
+
 export type Facet = { name: string; values: string[] };
 
 export type Extraction = {
@@ -162,10 +164,13 @@ function parse(html: string, url: string, finalUrl: string, httpStatus: number):
 
   const title = clean($("head title").first().text()) || null;
 
+  // Le repli DataForSEO intervient avant d'arriver ici. Si un challenge passe
+  // quand même, c'est que la protection résiste aussi à leurs crawleurs.
   if (title && /just a moment|un instant|attention required|access denied/i.test(title)) {
     throw new ExtractionError(
-      `La page est protégée par un pare-feu applicatif (titre reçu : « ${title} »). ` +
-        `L'IP du serveur doit être autorisée côté Cloudflare, ou il faut passer par l'export / l'API PrestaShop.`,
+      `Page de challenge anti-robot reçue (titre : « ${title} »), y compris après repli. ` +
+        `Il faut une autorisation explicite côté site : règle Cloudflare avec en-tête secret, ` +
+        `ou API PrestaShop.`,
       "blocked",
     );
   }
@@ -262,6 +267,20 @@ function parse(html: string, url: string, finalUrl: string, httpStatus: number):
   };
 }
 
+/** Une réponse de challenge anti-robot ressemble à du HTML valide : on la reconnaît au titre. */
+function looksLikeChallenge(html: string): boolean {
+  return /<title[^>]*>\s*(just a moment|un instant|attention required|access denied)/i.test(html);
+}
+
+/**
+ * Récupère et analyse une page catégorie.
+ *
+ * Tente d'abord la requête directe. Si le site la refuse — pare-feu applicatif,
+ * page de challenge — bascule sur l'infrastructure de crawl de DataForSEO,
+ * dont les IP et le rendu navigateur passent là où les nôtres échouent. Les
+ * sélecteurs d'analyse sont les mêmes dans les deux cas : seule la façon
+ * d'obtenir le HTML change. `diagnostics` indique la voie empruntée.
+ */
 export async function extractFromUrl(rawUrl: string): Promise<Extraction> {
   let url: URL;
   try {
@@ -273,41 +292,65 @@ export async function extractFromUrl(rawUrl: string): Promise<Extraction> {
     throw new ExtractionError(`Protocole non supporté : ${url.protocol}`, "invalid_url");
   }
 
-  let response: Response;
+  let directFailure: string | null = null;
+  let html: string | null = null;
+  let status = 0;
+  let finalUrl = rawUrl;
+
   try {
-    response = await fetch(url, {
+    const response = await fetch(url, {
       headers: { ...BROWSER_HEADERS, ...bypassHeader() },
       redirect: "follow",
       cache: "no-store",
     });
+
+    const contentType = response.headers.get("content-type") ?? "";
+    const body = await response.text();
+
+    if (response.ok && contentType.includes("html") && !looksLikeChallenge(body)) {
+      html = body;
+      status = response.status;
+      finalUrl = response.url || rawUrl;
+    } else if (!response.ok) {
+      directFailure = `${url.hostname} a répondu ${response.status}`;
+    } else if (!contentType.includes("html")) {
+      directFailure = `réponse non HTML (${contentType || "type inconnu"})`;
+    } else {
+      directFailure = "page de challenge anti-robot";
+    }
   } catch (error) {
-    throw new ExtractionError(
-      `Impossible de joindre ${url.hostname} : ${(error as Error).message}`,
-      "network",
-    );
+    directFailure = (error as Error).message;
   }
 
-  const contentType = response.headers.get("content-type") ?? "";
-  const body = await response.text();
+  const diagnostics: string[] = [];
 
-  if (response.status === 403 || response.status === 503) {
-    throw new ExtractionError(
-      `${url.hostname} a répondu ${response.status} — bloqué par un pare-feu applicatif. ` +
-        (process.env.EXTRACT_BYPASS_HEADER
-          ? `Le laissez-passer est configuré côté serveur : vérifie que la règle Cloudflare ` +
-            `correspondante est bien active sur ${url.hostname}.`
-          : `Deux issues : créer côté Cloudflare une règle qui laisse passer les requêtes ` +
-            `portant un en-tête secret (puis renseigner EXTRACT_BYPASS_HEADER et ` +
-            `EXTRACT_BYPASS_TOKEN), ou passer par l'API PrestaShop.`),
-      "blocked",
-    );
-  }
-  if (!response.ok) {
-    throw new ExtractionError(`${url.hostname} a répondu ${response.status}.`, "http");
-  }
-  if (!contentType.includes("html")) {
-    throw new ExtractionError(`Réponse non HTML (${contentType || "type inconnu"}).`, "not_html");
+  if (html === null) {
+    if (!hasDataForSeoCredentials()) {
+      throw new ExtractionError(
+        `Accès direct refusé (${directFailure}). Aucun repli possible : DataForSEO n'est pas ` +
+          `configuré. Renseigne DATAFORSEO_LOGIN et DATAFORSEO_PASSWORD pour que la page soit ` +
+          `récupérée via leur infrastructure de crawl.`,
+        "blocked",
+      );
+    }
+
+    try {
+      html = await fetchPageHtml(rawUrl);
+      diagnostics.push(
+        `accès : direct refusé (${directFailure}), page récupérée via DataForSEO`,
+      );
+    } catch (error) {
+      throw new ExtractionError(
+        `Accès direct refusé (${directFailure}), et le repli DataForSEO a échoué : ` +
+          `${(error as Error).message}`,
+        "blocked",
+      );
+    }
+  } else {
+    diagnostics.push("accès : direct");
   }
 
-  return parse(body, rawUrl, response.url || rawUrl, response.status);
+  const extraction = parse(html, rawUrl, finalUrl, status);
+  extraction.diagnostics = [...diagnostics, ...extraction.diagnostics];
+  return extraction;
 }

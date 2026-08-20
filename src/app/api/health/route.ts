@@ -43,9 +43,17 @@ export async function GET() {
         describe("ANTHROPIC_API_KEY"),
         describe("DATAFORSEO_LOGIN"),
         describe("DATAFORSEO_PASSWORD"),
+        describe("EXTRACT_BYPASS_HEADER"),
+        describe("EXTRACT_BYPASS_TOKEN"),
         describe("NEXT_PUBLIC_SUPABASE_URL"),
         describe("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY"),
       ],
+      // Noms seuls, jamais les valeurs. Rend visible une variable saisie sous un
+      // nom approchant — faute de frappe, tiret au lieu du souligné, espace
+      // final — qui autrement resterait introuvable.
+      nomsApprochants: Object.keys(process.env)
+        .filter((key) => /anthropic|claude|dataforseo|bypass/i.test(key))
+        .sort(),
     },
     { headers: { "Cache-Control": "no-store" } },
   );
