@@ -108,11 +108,21 @@ export const CategoryContentSchema = z.object({
       "Meta description, 140 à 158 caractères espaces compris — jamais plus de 158, " +
         "Google tronque au-delà",
     ),
-  h1: z.string().describe("H1 de la page, contient le mot-clé principal"),
+  h1: z
+    .string()
+    .describe(
+      "H1 de la page, 40 à 65 caractères espaces compris — jamais plus de 65, " +
+        "contient le mot-clé principal",
+    ),
   intro: z
     .string()
     .describe("Paragraphe d'introduction sous le H1, mot-clé dans la première phrase"),
-  sections: z.array(SectionSchema).describe("3 à 5 sections de contenu"),
+  sections: z
+    .array(SectionSchema)
+    .describe(
+      "3 à 5 sections. Ensemble du texte visé entre 5 000 et 8 000 caractères : " +
+        "assez pour couvrir le sujet, pas au point de noyer la grille produits",
+    ),
   faq: z.array(FaqItemSchema).describe("2 à 4 questions fréquentes à intention transactionnelle"),
   editorialAngle: z.string().describe("L'angle éditorial retenu, repris de la liste imposée"),
   keywordVariants: z
@@ -169,10 +179,23 @@ Chaque paragraphe doit aider à choisir et à commander.
 
 ANCRAGE DANS LA PAGE
 Tu reçois les produits réellement listés et les facettes de filtres réellement
-disponibles. Sers-t'en : cite les matières, tailles, styles, gammes de prix qui
-existent vraiment. Un texte qui pourrait être collé sur une autre catégorie du
-site est un échec. N'invente aucune caractéristique, aucun prix, aucun délai,
-aucun chiffre qui ne figure pas dans les données fournies.
+disponibles. Sers-t'en : cite les matières, tailles, styles, pierres, origines
+et finitions qui existent vraiment. Un texte qui pourrait être collé sur une
+autre catégorie du site est un échec. N'invente aucune caractéristique, aucun
+prix, aucun délai, aucun engagement commercial absent des données fournies.
+
+INTERDICTION DES CHIFFRES PÉRISSABLES
+Les nombres qui accompagnent les facettes — « 905 références », « 940 en stock »,
+« 308 origine Australie » — sont un instantané du catalogue au moment du relevé.
+Ils changent chaque semaine. Ne les écris JAMAIS dans le texte : un contenu qui
+annonce 940 références en stock devient faux au premier réassort, et un
+revendeur qui le constate cesse de te croire sur le reste.
+
+Sers-t'en pour décider quoi mettre en avant — une facette à 300 références mérite
+une section, une facette à 3 non — mais formule sans le chiffre : « l'essentiel
+du catalogue est en argent rhodié » plutôt que « 905 références en argent
+rhodié ». Même règle pour les stocks, les délais et les minimums de commande :
+si l'information ne figure pas dans le brief, ne l'affirme pas.
 
 UNICITÉ
 On te donne les mots-clés et les angles déjà attribués aux autres catégories du
