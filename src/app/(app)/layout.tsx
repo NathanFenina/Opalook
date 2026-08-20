@@ -17,19 +17,19 @@ export default async function AppLayout({
 
   return (
     <div className="min-h-screen">
-      <header className="border-b border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+      <header className="border-b border-border bg-card ">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-3.5">
           <Link href="/dashboard" className="text-sm font-semibold tracking-tight">
             Opalook
           </Link>
           <div className="flex items-center gap-4">
-            <span className="hidden text-xs text-slate-500 sm:inline dark:text-slate-400">
+            <span className="hidden text-xs text-muted-foreground sm:inline dark:text-muted-foreground/70">
               {user.email}
             </span>
             <form action="/auth/signout" method="post">
               <button
                 type="submit"
-                className="text-xs font-medium text-slate-500 underline-offset-4 hover:underline dark:text-slate-400"
+                className="text-xs font-medium text-muted-foreground underline-offset-4 hover:underline dark:text-muted-foreground/70"
               >
                 Déconnexion
               </button>

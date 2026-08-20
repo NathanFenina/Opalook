@@ -8,9 +8,9 @@ import {
   ChecksList,
   EmptyState,
   ScoreBadge,
-  secondaryButtonClass,
-} from "@/components/ui";
-import { Metric, MetricRow } from "@/components/metrics";
+  Metric,
+  MetricRow,
+} from "@/components/app-ui";
 import { StatusSelect } from "@/components/status-select";
 import { deleteCategory } from "../../actions";
 import { ImportForm } from "./import-form";
@@ -19,6 +19,7 @@ import { PipelineForm } from "./pipeline-form";
 import { CopyButton } from "./copy-button";
 import { KeywordsForm, type GscQuery } from "./keywords-form";
 import { SerpForm } from "./serp-form";
+import { Button } from "@/components/ui/button";
 
 // La rédaction par Claude prend nettement plus que la durée par défaut d'une
 // fonction Vercel : on demande explicitement la fenêtre maximale.
@@ -46,11 +47,11 @@ function checksFromPayload(payload: unknown): Check[] {
 function Output({ label, value }: { label: string; value: string | null }) {
   return (
     <div className="space-y-1">
-      <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+      <p className="text-xs font-medium text-muted-foreground">
         {label}
-        {value && <span className="ml-2 font-normal text-slate-400">{value.length} car.</span>}
+        {value && <span className="ml-2 font-normal text-muted-foreground/70">{value.length} car.</span>}
       </p>
-      <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm whitespace-pre-wrap dark:bg-slate-950">
+      <p className="rounded-lg bg-muted px-3 py-2 text-sm whitespace-pre-wrap ">
         {value || "—"}
       </p>
     </div>
@@ -132,7 +133,7 @@ export default async function CategoryPage({
         {project && (
           <Link
             href={`/projects/${project.id}`}
-            className="text-xs text-slate-500 underline-offset-4 hover:underline dark:text-slate-400"
+            className="text-xs text-muted-foreground underline-offset-4 hover:underline dark:text-muted-foreground/70"
           >
             ← {project.name}
           </Link>
@@ -151,7 +152,7 @@ export default async function CategoryPage({
           href={category.url}
           target="_blank"
           rel="noreferrer"
-          className="block text-sm break-all text-slate-600 underline-offset-4 hover:underline dark:text-slate-400"
+          className="block text-sm break-all text-muted-foreground underline-offset-4 hover:underline dark:text-muted-foreground/70"
         >
           {category.url}
         </a>
@@ -192,7 +193,7 @@ export default async function CategoryPage({
       </Card>
 
       <details className="space-y-8">
-        <summary className="cursor-pointer text-sm font-medium text-slate-600 select-none hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100">
+        <summary className="cursor-pointer text-sm font-medium text-muted-foreground select-none hover:text-slate-900 dark:text-muted-foreground/70 dark:hover:text-slate-100">
           Étapes détaillées, à lancer séparément
         </summary>
         <div className="mt-4 space-y-8">
@@ -203,7 +204,7 @@ export default async function CategoryPage({
         <div className="space-y-3">
           <ImportForm categoryId={category.id} />
           {category.source_fetched_at && (
-            <p className="text-xs text-slate-500 dark:text-slate-400">
+            <p className="text-xs text-muted-foreground">
               Dernière récupération : {new Date(category.source_fetched_at).toLocaleString("fr-FR")}
             </p>
           )}
@@ -217,7 +218,7 @@ export default async function CategoryPage({
         >
           <div className="grid gap-6 sm:grid-cols-2">
             <div className="space-y-2">
-              <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+              <p className="text-xs font-medium text-muted-foreground">
                 Produits{source.productCount ? ` (${source.productCount} au total)` : ""}
               </p>
               <ul className="space-y-1 text-sm">
@@ -227,19 +228,19 @@ export default async function CategoryPage({
                   </li>
                 ))}
                 {(source.products?.length ?? 0) > 15 && (
-                  <li className="text-xs text-slate-400">
+                  <li className="text-xs text-muted-foreground/70">
                     + {(source.products?.length ?? 0) - 15} autres
                   </li>
                 )}
               </ul>
             </div>
             <div className="space-y-2">
-              <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Filtres</p>
+              <p className="text-xs font-medium text-muted-foreground">Filtres</p>
               <ul className="space-y-2 text-sm">
                 {(source.facets ?? []).map((facet) => (
                   <li key={facet.name}>
                     <span className="font-medium">{facet.name}</span>{" "}
-                    <span className="text-slate-500 dark:text-slate-400">
+                    <span className="text-muted-foreground">
                       {facet.values.slice(0, 8).join(", ")}
                     </span>
                   </li>
@@ -259,7 +260,7 @@ export default async function CategoryPage({
 
           {serp.results && serp.results.length > 0 && (
             <>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
+              <p className="text-xs text-muted-foreground">
                 Relevé le{" "}
                 {category.serp_fetched_at
                   ? new Date(category.serp_fetched_at).toLocaleString("fr-FR")
@@ -271,7 +272,7 @@ export default async function CategoryPage({
               <ol className="space-y-3">
                 {serp.results.slice(0, 5).map((result) => (
                   <li key={result.url} className="flex gap-3 text-sm">
-                    <span className="w-5 shrink-0 text-right font-semibold tabular-nums text-slate-400">
+                    <span className="w-5 shrink-0 text-right font-semibold tabular-nums text-muted-foreground/70">
                       {result.rank}
                     </span>
                     <span className="min-w-0">
@@ -283,9 +284,9 @@ export default async function CategoryPage({
                       >
                         {result.title}
                       </a>
-                      <span className="ml-2 text-xs text-slate-400">{result.domain}</span>
+                      <span className="ml-2 text-xs text-muted-foreground/70">{result.domain}</span>
                       {result.description && (
-                        <span className="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">
+                        <span className="mt-0.5 block text-xs text-muted-foreground">
                           {result.description}
                         </span>
                       )}
@@ -320,7 +321,7 @@ export default async function CategoryPage({
           <div className="flex flex-wrap items-center gap-3">
             {before && <ScoreBadge score={before.score} label="en ligne" />}
             {before && latest?.score != null && (
-              <span aria-hidden className="text-slate-400">
+              <span aria-hidden className="text-muted-foreground/70">
                 →
               </span>
             )}
@@ -346,8 +347,8 @@ export default async function CategoryPage({
               <div
                 className={`space-y-2 rounded-lg px-3 py-3 text-sm ${
                   analysis.intentMatch
-                    ? "bg-slate-50 dark:bg-slate-950"
-                    : "bg-amber-50 dark:bg-amber-950/40"
+                    ? "bg-muted"
+                    : "bg-amber-500/10"
                 }`}
               >
                 <p className="font-medium">
@@ -355,24 +356,24 @@ export default async function CategoryPage({
                     ? "Intention compatible avec une page catégorie"
                     : "Intention incompatible avec une page catégorie marchande"}
                 </p>
-                <p className="text-slate-600 dark:text-slate-400">{analysis.intentVerdict}</p>
-                <p className="text-slate-600 dark:text-slate-400">
+                <p className="text-muted-foreground">{analysis.intentVerdict}</p>
+                <p className="text-muted-foreground">
                   <span className="font-medium">Public visé : </span>
                   {analysis.audience}
                 </p>
                 {analysis.semanticGaps.length > 0 && (
-                  <p className="text-slate-600 dark:text-slate-400">
+                  <p className="text-muted-foreground">
                     <span className="font-medium">Manques comblés : </span>
                     {analysis.semanticGaps.join(" · ")}
                   </p>
                 )}
                 {analysis.missingEntities.length > 0 && (
-                  <p className="text-slate-600 dark:text-slate-400">
+                  <p className="text-muted-foreground">
                     <span className="font-medium">Entités intégrées : </span>
                     {analysis.missingEntities.join(" · ")}
                   </p>
                 )}
-                <p className="text-slate-600 dark:text-slate-400">
+                <p className="text-muted-foreground">
                   <span className="font-medium">Différenciation : </span>
                   {analysis.differentiation}
                 </p>
@@ -383,21 +384,21 @@ export default async function CategoryPage({
             <Output label="H1 — à reporter sur le nom de la catégorie" value={latest.h1} />
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-3">
-                <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                <p className="text-xs font-medium text-muted-foreground">
                   HTML pour le champ « description » (sans H1)
                   {latest.content && (
-                    <span className="ml-2 font-normal text-slate-400">
+                    <span className="ml-2 font-normal text-muted-foreground/70">
                       {latest.content.length} car.
                     </span>
                   )}
                 </p>
                 {latest.content && <CopyButton value={latest.content} />}
               </div>
-              <pre className="max-h-96 overflow-auto rounded-lg bg-slate-50 px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap dark:bg-slate-950">
+              <pre className="max-h-96 overflow-auto rounded-lg bg-muted px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap ">
                 {latest.content || "—"}
               </pre>
             </div>
-            <div className="border-t border-slate-200 pt-4 dark:border-slate-800">
+            <div className="border-t border-border pt-4 ">
               <ChecksList checks={checksFromPayload(latest.payload)} />
             </div>
           </div>
@@ -423,11 +424,11 @@ export default async function CategoryPage({
                 <span className="font-medium">v{optimization.version}</span>
                 {optimization.score != null && <ScoreBadge score={optimization.score} />}
                 {optimization.editorial_angle && (
-                  <span className="text-xs text-slate-500 dark:text-slate-400">
+                  <span className="text-xs text-muted-foreground">
                     {optimization.editorial_angle}
                   </span>
                 )}
-                <span className="text-xs text-slate-400">
+                <span className="text-xs text-muted-foreground/70">
                   {new Date(optimization.created_at).toLocaleString("fr-FR")}
                 </span>
               </li>
@@ -439,9 +440,9 @@ export default async function CategoryPage({
       <form action={deleteCategory}>
         <input type="hidden" name="category_id" value={category.id} />
         <input type="hidden" name="project_id" value={project?.id ?? ""} />
-        <button type="submit" className={secondaryButtonClass}>
+        <Button variant="outline" size="sm" type="submit">
           Supprimer cette catégorie
-        </button>
+        </Button>
       </form>
     </div>
   );

@@ -13,7 +13,7 @@ function SubmitButton() {
     <button
       type="submit"
       disabled={pending}
-      className="w-full rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-slate-700 disabled:opacity-50 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200"
+      className="w-full rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-slate-700 disabled:opacity-50 dark:bg-card dark:text-slate-900 dark:hover:bg-slate-200"
     >
       {pending ? "Envoi…" : "Recevoir le lien de connexion"}
     </button>
@@ -29,7 +29,7 @@ export function LoginForm({ next }: { next: string }) {
       <div className="space-y-1.5">
         <label
           htmlFor="email"
-          className="block text-sm font-medium text-slate-700 dark:text-slate-300"
+          className="block text-sm font-medium text-foreground"
         >
           Adresse e-mail
         </label>
@@ -40,7 +40,7 @@ export function LoginForm({ next }: { next: string }) {
           required
           autoComplete="email"
           placeholder="prenom@decupler.com"
-          className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:focus:border-slate-400"
+          className="w-full rounded-lg border border-input bg-card px-3 py-2.5 text-sm outline-none focus:border-slate-900 dark:border-slate-700 dark:focus:border-slate-400"
         />
       </div>
 

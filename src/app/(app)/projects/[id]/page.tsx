@@ -2,7 +2,18 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/server";
-import { Card, EmptyState, Field, buttonClass, inputClass } from "@/components/ui";
+import { Card, EmptyState, Field } from "@/components/app-ui";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { StatusSelect } from "@/components/status-select";
 import { createCategory, saveProjectBrief } from "../../actions";
 import {
@@ -27,9 +38,9 @@ function Cell({
         ? value.toLocaleString("fr-FR")
         : value;
   return (
-    <td className={`px-3 py-2 text-right tabular-nums ${tone ?? "text-slate-600 dark:text-slate-400"}`}>
+    <TableCell className={`text-right tabular-nums ${tone ?? "text-muted-foreground"}`}>
       {display}
-    </td>
+    </TableCell>
   );
 }
 
@@ -80,12 +91,12 @@ export default async function ProjectPage({
       <div className="space-y-1">
         <Link
           href="/dashboard"
-          className="text-xs text-slate-500 underline-offset-4 hover:underline dark:text-slate-400"
+          className="text-xs text-muted-foreground underline-offset-4 hover:underline dark:text-muted-foreground/70"
         >
           ← Tous les projets
         </Link>
         <h1 className="text-xl font-semibold tracking-tight">{project.name}</h1>
-        <p className="text-sm text-slate-600 dark:text-slate-400">
+        <p className="text-sm text-muted-foreground">
           {project.domain ?? "domaine non renseigné"} · {ranked.length} catégories ·{" "}
           {totals.impressions.toLocaleString("fr-FR")} impressions ·{" "}
           {totals.clicks.toLocaleString("fr-FR")} clics · {totals.done} terminée
@@ -94,54 +105,51 @@ export default async function ProjectPage({
       </div>
 
       {ranked.length > 0 ? (
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
-          <table className="w-full min-w-[52rem] border-collapse bg-white text-sm dark:bg-slate-900">
-            <thead>
-              <tr className="border-b border-slate-200 text-xs text-slate-500 dark:border-slate-800 dark:text-slate-400">
-                <th className="px-3 py-2 text-left font-medium">Catégorie</th>
-                <th className="px-3 py-2 text-left font-medium">Mot-clé principal</th>
-                <th className="px-3 py-2 text-left font-medium">Statut</th>
-                <th className="px-3 py-2 text-right font-medium">Impr.</th>
-                <th className="px-3 py-2 text-right font-medium">Clics</th>
-                <th className="px-3 py-2 text-right font-medium">Pos.</th>
-                <th className="px-3 py-2 text-right font-medium">Volume</th>
-                <th className="px-3 py-2 text-right font-medium">KD</th>
-              </tr>
-            </thead>
-            <tbody>
+        <div className="bg-card overflow-x-auto rounded-xl border">
+          <Table className="min-w-[54rem]">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Catégorie</TableHead>
+                <TableHead>Mot-clé principal</TableHead>
+                <TableHead>Statut</TableHead>
+                <TableHead className="text-right">Impr.</TableHead>
+                <TableHead className="text-right">Clics</TableHead>
+                <TableHead className="text-right">Pos.</TableHead>
+                <TableHead className="text-right">Volume</TableHead>
+                <TableHead className="text-right">KD</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {ranked.map((category) => {
                 const quickWin =
                   category.metrics &&
                   category.metrics.position >= 8 &&
                   category.metrics.position <= 20;
                 return (
-                  <tr
-                    key={category.id}
-                    className="border-b border-slate-100 last:border-0 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
-                  >
-                    <td className="max-w-xs px-3 py-2">
+                  <TableRow key={category.id}>
+                    <TableCell className="max-w-xs">
                       <Link
                         href={`/categories/${category.id}`}
                         className="block truncate font-medium underline-offset-4 hover:underline"
                       >
                         {category.name}
                       </Link>
-                      <span className="block truncate text-xs text-slate-400">
+                      <span className="text-muted-foreground/70 block truncate text-xs">
                         {category.url.replace(/^https?:\/\/[^/]+/, "")}
                       </span>
-                    </td>
-                    <td className="max-w-[14rem] px-3 py-2">
-                      <span className="block truncate text-slate-600 dark:text-slate-400">
+                    </TableCell>
+                    <TableCell className="max-w-[14rem]">
+                      <span className="text-muted-foreground block truncate">
                         {category.target_keyword ?? "—"}
                       </span>
-                    </td>
-                    <td className="px-3 py-2">
+                    </TableCell>
+                    <TableCell>
                       <StatusSelect
                         categoryId={category.id}
                         projectId={project.id}
                         status={category.status}
                       />
-                    </td>
+                    </TableCell>
                     <Cell value={category.metrics?.impressions} />
                     <Cell value={category.metrics?.clicks} />
                     <Cell
@@ -152,11 +160,11 @@ export default async function ProjectPage({
                     />
                     <Cell value={category.keyword_volume} />
                     <Cell value={category.keyword_difficulty} />
-                  </tr>
+                  </TableRow>
                 );
               })}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       ) : (
         <EmptyState>
@@ -171,27 +179,25 @@ export default async function ProjectPage({
         <form action={saveProjectBrief} className="space-y-4">
           <input type="hidden" name="project_id" value={project.id} />
           <Field label="Domaine">
-            <input
+            <Input
               name="domain"
               defaultValue={project.domain ?? ""}
               placeholder="client-x.fr"
-              className={inputClass}
             />
           </Field>
           <Field
             label="Brief"
             hint="Ex. : grossiste B2B, s'adresse à des revendeurs professionnels, insister sur les quantités minimales et les marges."
           >
-            <textarea
+            <Textarea
               name="notes"
               rows={5}
               defaultValue={project.notes ?? ""}
-              className={inputClass}
             />
           </Field>
-          <button type="submit" className={buttonClass}>
+          <Button type="submit">
             Enregistrer le brief
-          </button>
+          </Button>
         </form>
       </Card>
 
@@ -221,18 +227,18 @@ export default async function ProjectPage({
           <input type="hidden" name="project_id" value={project.id} />
           <div className="grid gap-4 sm:grid-cols-3">
             <Field label="Nom de la catégorie">
-              <input name="name" required placeholder="Chaussures de running" className={inputClass} />
+              <Input name="name" required placeholder="Chaussures de running" />
             </Field>
             <Field label="URL">
-              <input name="url" required placeholder="https://…" className={inputClass} />
+              <Input name="url" required placeholder="https://…" />
             </Field>
             <Field label="Mot-clé cible">
-              <input name="target_keyword" placeholder="chaussures de running" className={inputClass} />
+              <Input name="target_keyword" placeholder="chaussures de running" />
             </Field>
           </div>
-          <button type="submit" className={buttonClass}>
+          <Button type="submit">
             Ajouter
-          </button>
+          </Button>
         </form>
       </Card>
     </div>

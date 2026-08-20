@@ -11,14 +11,17 @@ import {
   type GscImportState,
   type SemrushImportState,
 } from "../../actions";
-import { buttonClass, inputClass, Field } from "@/components/ui";
+import { Field } from "@/components/app-ui";
+import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 
 function Submit({ label, pendingLabel }: { label: string; pendingLabel: string }) {
   const { pending } = useFormStatus();
   return (
-    <button type="submit" disabled={pending} className={buttonClass}>
+    <Button type="submit" disabled={pending}>
       {pending ? pendingLabel : label}
-    </button>
+    </Button>
   );
 }
 
@@ -29,8 +32,8 @@ function Feedback({ status, message }: { status: string; message: string }) {
       role="status"
       className={`rounded-lg px-3 py-2 text-sm ${
         status === "error"
-          ? "bg-red-50 text-red-800 dark:bg-red-950/50 dark:text-red-300"
-          : "bg-emerald-50 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300"
+          ? "bg-destructive/10 text-destructive"
+          : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
       }`}
     >
       {message}
@@ -50,12 +53,12 @@ export function ImportCategoriesForm({ projectId }: { projectId: string }) {
         label="URL des catégories"
         hint="Une par ligne. Ajoute un nom après une barre verticale si tu veux le forcer : URL | Nom de la catégorie."
       >
-        <textarea
+        <Textarea
           name="urls"
           rows={8}
           required
           placeholder={"https://opalook.eu/fr/13-grossiste-bijoux-revendeur-professionnel\nhttps://opalook.eu/fr/25-bracelets | Bracelets"}
-          className={`${inputClass} font-mono text-xs`}
+          className="font-mono text-xs"
         />
       </Field>
       <Submit label="Importer les URL" pendingLabel="Import…" />
@@ -76,15 +79,15 @@ export function ImportGscForm({ projectId }: { projectId: string }) {
         label="Fichier CSV"
         hint="L'export doit croiser page ET requête sur la même ligne — un export Looker Studio « URL Impression » avec les dimensions Landing Page + Query fait l'affaire."
       >
-        <input
+        <Input
           type="file"
           name="file"
           accept=".csv,text/csv,text/plain"
-          className={`${inputClass} file:mr-3 file:rounded file:border-0 file:bg-slate-200 file:px-3 file:py-1 file:text-xs dark:file:bg-slate-800 dark:file:text-slate-200`}
+          className="file:mr-3 file:rounded file:border-0 file:bg-slate-200 file:px-3 file:py-1 file:text-xs dark:file:bg-slate-800 dark:file:text-slate-200"
         />
       </Field>
       <Field label="…ou colle le contenu CSV">
-        <textarea name="csv" rows={4} className={`${inputClass} font-mono text-xs`} />
+        <Textarea name="csv" rows={4} className="font-mono text-xs" />
       </Field>
 
       <label className="flex items-start gap-2.5 text-sm">
@@ -92,11 +95,11 @@ export function ImportGscForm({ projectId }: { projectId: string }) {
           type="checkbox"
           name="create_missing"
           defaultChecked
-          className="mt-0.5 size-4 rounded border-slate-300 dark:border-slate-700"
+          className="mt-0.5 size-4 rounded border-input"
         />
         <span>
           Créer les catégories détectées dans l&apos;export
-          <span className="block text-xs text-slate-500 dark:text-slate-400">
+          <span className="block text-xs text-muted-foreground">
             Reconnaît les URL de catégories PrestaShop (/fr/13-mon-slug) et écarte fiches
             produits, pages CMS et URL à facettes. Évite d&apos;avoir à établir la liste ailleurs.
           </span>
@@ -106,11 +109,11 @@ export function ImportGscForm({ projectId }: { projectId: string }) {
       <Feedback status={state.status} message={state.message} />
 
       {state.cannibalization && state.cannibalization.length > 0 && (
-        <div className="space-y-2 rounded-lg bg-amber-50 px-3 py-3 text-sm dark:bg-amber-950/40">
-          <p className="font-medium text-amber-900 dark:text-amber-200">
+        <div className="space-y-2 rounded-lg bg-amber-500/10 px-3 py-3 text-sm dark:bg-amber-950/40">
+          <p className="font-medium text-amber-700 dark:text-amber-400">
             Cannibalisation détectée — plusieurs URL sur la même requête
           </p>
-          <ul className="space-y-2 text-xs text-amber-900 dark:text-amber-200">
+          <ul className="space-y-2 text-xs text-amber-700 dark:text-amber-400">
             {state.cannibalization.map((conflict) => (
               <li key={conflict.query}>
                 <span className="font-medium">« {conflict.query} »</span>
@@ -142,25 +145,25 @@ export function ImportSemrushForm({ projectId }: { projectId: string }) {
         label="Fichier CSV"
         hint="Export Semrush (Keyword Overview, Bulk Analysis ou Keyword Magic). Colonnes reconnues : Keyword, Volume, Keyword Difficulty, CPC, Intent — en anglais comme en français, dans n'importe quel ordre."
       >
-        <input
+        <Input
           type="file"
           name="file"
           accept=".csv,text/csv,text/plain"
-          className={`${inputClass} file:mr-3 file:rounded file:border-0 file:bg-slate-200 file:px-3 file:py-1 file:text-xs dark:file:bg-slate-800 dark:file:text-slate-200`}
+          className="file:mr-3 file:rounded file:border-0 file:bg-slate-200 file:px-3 file:py-1 file:text-xs dark:file:bg-slate-800 dark:file:text-slate-200"
         />
       </Field>
       <Field label="…ou colle le contenu CSV">
-        <textarea name="csv" rows={4} className={`${inputClass} font-mono text-xs`} />
+        <Textarea name="csv" rows={4} className="font-mono text-xs" />
       </Field>
       <Submit label="Importer volumes et difficulté" pendingLabel="Import…" />
       <Feedback status={state.status} message={state.message} />
 
       {state.unmatched && state.unmatched.length > 0 && (
         <div className="space-y-1 rounded-lg bg-amber-50 px-3 py-2 text-xs dark:bg-amber-950/40">
-          <p className="font-medium text-amber-900 dark:text-amber-200">
+          <p className="font-medium text-amber-700 dark:text-amber-400">
             Mots-clés du fichier sans catégorie correspondante
           </p>
-          <p className="text-amber-900/80 dark:text-amber-200/80">
+          <p className="text-amber-700/80 dark:text-amber-400/80">
             {state.unmatched.join(" · ")}
           </p>
         </div>

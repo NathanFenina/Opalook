@@ -12,7 +12,7 @@ export default async function LoginPage({
       <div className="w-full max-w-sm space-y-8">
         <div className="space-y-2">
           <h1 className="text-2xl font-semibold tracking-tight">Opalook</h1>
-          <p className="text-sm text-slate-600 dark:text-slate-400">
+          <p className="text-sm text-muted-foreground">
             La moulinette d&apos;optimisation des catégories e-commerce.
             Connecte-toi pour accéder à tes projets.
           </p>

@@ -5,10 +5,10 @@ import {
   Card,
   EmptyState,
   Field,
-  buttonClass,
-  inputClass,
-} from "@/components/ui";
+} from "@/components/app-ui";
 import { createProject } from "../actions";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 
 export default async function DashboardPage() {
   const supabase = await createClient();
@@ -24,7 +24,7 @@ export default async function DashboardPage() {
     <div className="space-y-8">
       <div className="space-y-1">
         <h1 className="text-xl font-semibold tracking-tight">Projets</h1>
-        <p className="text-sm text-slate-600 dark:text-slate-400">
+        <p className="text-sm text-muted-foreground">
           Un projet = un site e-commerce dont on optimise les pages catégories.
         </p>
       </div>
@@ -37,10 +37,10 @@ export default async function DashboardPage() {
               <li key={project.id}>
                 <Link
                   href={`/projects/${project.id}`}
-                  className="block rounded-xl border border-slate-200 bg-white p-4 transition hover:border-slate-400 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-slate-600"
+                  className="block rounded-xl border border-border bg-card p-4 transition hover:border-slate-400 dark:hover:border-slate-600"
                 >
                   <p className="font-medium">{project.name}</p>
-                  <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                  <p className="mt-0.5 text-xs text-muted-foreground">
                     {project.domain ?? "domaine non renseigné"} · {count}{" "}
                     {count > 1 ? "catégories" : "catégorie"}
                   </p>
@@ -59,14 +59,14 @@ export default async function DashboardPage() {
       >
         <form action={createProject} className="grid gap-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
           <Field label="Nom">
-            <input name="name" required placeholder="Client X" className={inputClass} />
+            <Input name="name" required placeholder="Client X" />
           </Field>
           <Field label="Domaine">
-            <input name="domain" placeholder="client-x.fr" className={inputClass} />
+            <Input name="domain" placeholder="client-x.fr" />
           </Field>
-          <button type="submit" className={buttonClass}>
+          <Button type="submit">
             Créer
-          </button>
+          </Button>
         </form>
       </Card>
     </div>

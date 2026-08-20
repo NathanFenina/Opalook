@@ -2,15 +2,14 @@
 
 import { useState } from "react";
 
-import { secondaryButtonClass } from "@/components/ui";
+import { Button } from "@/components/ui/button";
 
 export function CopyButton({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
 
   return (
-    <button
+    <Button variant="outline" size="sm"
       type="button"
-      className={secondaryButtonClass}
       onClick={async () => {
         await navigator.clipboard.writeText(value);
         setCopied(true);
@@ -18,6 +17,6 @@ export function CopyButton({ value }: { value: string }) {
       }}
     >
       {copied ? "Copié" : "Copier"}
-    </button>
+    </Button>
   );
 }

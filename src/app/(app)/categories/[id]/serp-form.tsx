@@ -4,16 +4,16 @@ import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
 
 import { fetchSerpAction, type SerpState } from "../../actions";
-import { buttonClass } from "@/components/ui";
+import { Button } from "@/components/ui/button";
 
 const INITIAL: SerpState = { status: "idle", message: "" };
 
 function SubmitButton({ hasData }: { hasData: boolean }) {
   const { pending } = useFormStatus();
   return (
-    <button type="submit" disabled={pending} className={buttonClass}>
+    <Button type="submit" disabled={pending}>
       {pending ? "Relevé du classement…" : hasData ? "Relancer l'analyse SERP" : "Analyser la SERP"}
-    </button>
+    </Button>
   );
 }
 
@@ -36,8 +36,8 @@ export function SerpForm({
           role="status"
           className={`rounded-lg px-3 py-2 text-sm ${
             state.status === "error"
-              ? "bg-red-50 text-red-800 dark:bg-red-950/50 dark:text-red-300"
-              : "bg-emerald-50 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300"
+              ? "bg-destructive/10 text-destructive"
+              : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
           }`}
         >
           {state.message}

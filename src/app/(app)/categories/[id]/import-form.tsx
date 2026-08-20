@@ -4,16 +4,16 @@ import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
 
 import { importFromUrl, type ImportState } from "../../actions";
-import { buttonClass } from "@/components/ui";
+import { Button } from "@/components/ui/button";
 
 const INITIAL: ImportState = { status: "idle", message: "" };
 
 function SubmitButton() {
   const { pending } = useFormStatus();
   return (
-    <button type="submit" disabled={pending} className={buttonClass}>
+    <Button type="submit" disabled={pending}>
       {pending ? "Récupération…" : "Importer depuis l'URL"}
-    </button>
+    </Button>
   );
 }
 
@@ -30,8 +30,8 @@ export function ImportForm({ categoryId }: { categoryId: string }) {
           role="status"
           className={`space-y-1 rounded-lg px-3 py-2 text-sm ${
             state.status === "error"
-              ? "bg-red-50 text-red-800 dark:bg-red-950/50 dark:text-red-300"
-              : "bg-emerald-50 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300"
+              ? "bg-destructive/10 text-destructive"
+              : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
           }`}
         >
           <p>{state.message}</p>
