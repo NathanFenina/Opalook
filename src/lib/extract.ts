@@ -48,6 +48,24 @@ export class ExtractionError extends Error {
   }
 }
 
+/**
+ * Laissez-passer pour franchir un pare-feu applicatif.
+ *
+ * Cloudflare bloque les requêtes serveur d'Opalook en 403, quelle que soit
+ * l'apparence des en-têtes : il faut une autorisation explicite côté site, pas
+ * une imitation de navigateur plus convaincante. La méthode robuste est une
+ * règle WAF qui laisse passer les requêtes portant un en-tête secret — plus
+ * fiable qu'une liste d'IP, celles de Vercel étant mouvantes.
+ *
+ * Renseigner EXTRACT_BYPASS_HEADER et EXTRACT_BYPASS_TOKEN côté serveur, et
+ * créer la règle correspondante côté Cloudflare.
+ */
+function bypassHeader(): Record<string, string> {
+  const name = process.env.EXTRACT_BYPASS_HEADER;
+  const token = process.env.EXTRACT_BYPASS_TOKEN;
+  return name && token ? { [name]: token } : {};
+}
+
 const BROWSER_HEADERS: Record<string, string> = {
   "User-Agent":
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -258,7 +276,7 @@ export async function extractFromUrl(rawUrl: string): Promise<Extraction> {
   let response: Response;
   try {
     response = await fetch(url, {
-      headers: BROWSER_HEADERS,
+      headers: { ...BROWSER_HEADERS, ...bypassHeader() },
       redirect: "follow",
       cache: "no-store",
     });
@@ -274,9 +292,13 @@ export async function extractFromUrl(rawUrl: string): Promise<Extraction> {
 
   if (response.status === 403 || response.status === 503) {
     throw new ExtractionError(
-      `${url.hostname} a répondu ${response.status} — accès refusé, très probablement un pare-feu ` +
-        `applicatif (Cloudflare). L'IP du serveur doit être autorisée, ou il faut passer par ` +
-        `l'export / l'API PrestaShop.`,
+      `${url.hostname} a répondu ${response.status} — bloqué par un pare-feu applicatif. ` +
+        (process.env.EXTRACT_BYPASS_HEADER
+          ? `Le laissez-passer est configuré côté serveur : vérifie que la règle Cloudflare ` +
+            `correspondante est bien active sur ${url.hostname}.`
+          : `Deux issues : créer côté Cloudflare une règle qui laisse passer les requêtes ` +
+            `portant un en-tête secret (puis renseigner EXTRACT_BYPASS_HEADER et ` +
+            `EXTRACT_BYPASS_TOKEN), ou passer par l'API PrestaShop.`),
       "blocked",
     );
   }
