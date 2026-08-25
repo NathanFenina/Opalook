@@ -3,6 +3,8 @@ import { notFound } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/server";
 import { auditSource, type Check } from "@/lib/moulinette";
+import { buildFamily } from "@/lib/catalogue";
+import type { ComplianceReport } from "@/lib/compliance";
 import {
   Card,
   ChecksList,
@@ -58,6 +60,80 @@ function Output({ label, value }: { label: string; value: string | null }) {
   );
 }
 
+/** Un livrable HTML, avec son bouton de copie. */
+function HtmlOutput({ label, value }: { label: string; value: string | null }) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs font-medium text-muted-foreground">
+          {label}
+          {value && (
+            <span className="ml-2 font-normal text-muted-foreground/70">
+              {value.length} car.
+            </span>
+          )}
+        </p>
+        {value && <CopyButton value={value} />}
+      </div>
+      <pre className="max-h-96 overflow-auto rounded-lg bg-muted px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap ">
+        {value || "—"}
+      </pre>
+    </div>
+  );
+}
+
+/**
+ * Résultat du contrôle automatique des règles métier.
+ *
+ * Le modèle applique les règles, ce module vérifie. Sur des centaines de
+ * catégories, c'est le seul moyen d'attraper un « plaqué or » ou un disclaimer
+ * manquant sans tout relire.
+ */
+function CompliancePanel({ report }: { report: ComplianceReport }) {
+  const errors = report.issues.filter((issue) => issue.severity === "erreur");
+  const warnings = report.issues.filter((issue) => issue.severity === "avertissement");
+
+  if (report.issues.length === 0) {
+    return (
+      <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-400">
+        Règles métier : {report.passed} contrôles passés, aucun écart détecté.
+      </p>
+    );
+  }
+
+  return (
+    <div
+      className={`space-y-3 rounded-lg px-3 py-3 text-sm ${
+        errors.length > 0 ? "bg-destructive/10" : "bg-amber-500/10"
+      }`}
+    >
+      <p
+        className={`font-medium ${
+          errors.length > 0 ? "text-destructive" : "text-amber-700 dark:text-amber-400"
+        }`}
+      >
+        {errors.length > 0
+          ? `${errors.length} interdit(s) à corriger avant publication`
+          : `${warnings.length} point(s) à vérifier`}
+        {errors.length > 0 && warnings.length > 0 ? ` · ${warnings.length} à vérifier` : ""}
+      </p>
+      <ul className="space-y-2.5">
+        {[...errors, ...warnings].map((issue, index) => (
+          <li key={`${issue.rule}-${index}`} className="space-y-0.5">
+            <p className="font-medium">
+              {issue.severity === "erreur" ? "Interdit" : "À vérifier"} · {issue.rule}
+            </p>
+            <p className="text-muted-foreground">{issue.detail}</p>
+            {issue.excerpt && (
+              <p className="text-muted-foreground/80 text-xs italic">{issue.excerpt}</p>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export default async function CategoryPage({
   params,
 }: {
@@ -98,7 +174,9 @@ export default async function CategoryPage({
 
   const payload = (latest?.payload ?? {}) as {
     groundedInPage?: boolean;
+    compliance?: ComplianceReport;
     structured?: {
+      differentiationFromFamily?: string;
       analysis?: {
         audience: string;
         intentVerdict: string;
@@ -110,6 +188,19 @@ export default async function CategoryPage({
     };
   };
   const analysis = payload.structured?.analysis;
+  const compliance = payload.compliance;
+
+  // La famille : c'est d'elle qu'il faut se démarquer en premier, puisqu'elle
+  // parle du même univers. On la lit à l'affichage pour que l'écart entre le
+  // texte produit et celui des sœurs soit vérifiable à l'œil.
+  const { data: relatives } = category.external_id
+    ? await supabase
+        .from("categories")
+        .select("id, external_id, parent_external_id, name, url, target_keyword")
+        .eq("project_id", category.project_id)
+    : { data: null };
+
+  const family = relatives ? buildFamily(category, relatives) : null;
 
   // La page d'origine n'est notée que si on l'a effectivement relevée :
   // auditer un formulaire vide ne produirait que des feux rouges sans information.
@@ -181,6 +272,86 @@ export default async function CategoryPage({
           hint={category.keyword_intent ?? undefined}
         />
       </MetricRow>
+
+      {family && (family.parent || family.siblings.length > 0 || family.children.length > 0) && (
+        <Card
+          title="Famille de la catégorie"
+          description="La mère et les sœurs parlent du même univers : c'est d'elles que le texte doit se démarquer, pas du reste du site. Elles sont passées à la rédaction."
+        >
+          <div className="grid gap-6 text-sm sm:grid-cols-3">
+            <div className="space-y-2">
+              <p className="text-xs font-medium text-muted-foreground">Mère</p>
+              {family.parent ? (
+                <p>
+                  {family.parent.name}
+                  {family.parent.keyword && (
+                    <span className="block text-xs text-muted-foreground">
+                      {family.parent.keyword}
+                    </span>
+                  )}
+                </p>
+              ) : (
+                <p className="text-muted-foreground/70">Catégorie de premier niveau</p>
+              )}
+            </div>
+            <div className="space-y-2">
+              <p className="text-xs font-medium text-muted-foreground">
+                Sœurs ({family.siblings.length})
+              </p>
+              <ul className="space-y-1">
+                {family.siblings.slice(0, 12).map((sibling) => (
+                  <li key={sibling.url} className="truncate">
+                    {sibling.name}
+                    {sibling.keyword && (
+                      <span className="text-muted-foreground/70"> · {sibling.keyword}</span>
+                    )}
+                  </li>
+                ))}
+                {family.siblings.length > 12 && (
+                  <li className="text-xs text-muted-foreground/70">
+                    + {family.siblings.length - 12} autres
+                  </li>
+                )}
+                {family.siblings.length === 0 && (
+                  <li className="text-muted-foreground/70">Aucune</li>
+                )}
+              </ul>
+            </div>
+            <div className="space-y-2">
+              <p className="text-xs font-medium text-muted-foreground">
+                Filles ({family.children.length})
+              </p>
+              <ul className="space-y-1">
+                {family.children.slice(0, 12).map((child) => (
+                  <li key={child.url} className="truncate">
+                    {child.name}
+                  </li>
+                ))}
+                {family.children.length > 12 && (
+                  <li className="text-xs text-muted-foreground/70">
+                    + {family.children.length - 12} autres
+                  </li>
+                )}
+                {family.children.length === 0 && (
+                  <li className="text-muted-foreground/70">Aucune</li>
+                )}
+              </ul>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {(category.catalog_short_description || category.catalog_long_description) && (
+        <Card
+          title="Descriptions actuellement en ligne"
+          description="Telles qu'exportées de PrestaShop. C'est ce que les deux livrables remplacent."
+        >
+          <div className="space-y-4">
+            <Output label="Courte — haut de page" value={category.catalog_short_description} />
+            <Output label="Longue — bas de page" value={category.catalog_long_description} />
+          </div>
+        </Card>
+      )}
 
       <Card
         title="Traitement complet"
@@ -391,25 +562,28 @@ export default async function CategoryPage({
                 </p>
               </div>
             )}
+            {compliance && <CompliancePanel report={compliance} />}
             <Output label="Title" value={latest.title} />
             <Output label="Meta description" value={latest.meta_description} />
             <Output label="H1 — à reporter sur le nom de la catégorie" value={latest.h1} />
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-3">
+            {payload.structured?.differentiationFromFamily && (
+              <div className="space-y-1">
                 <p className="text-xs font-medium text-muted-foreground">
-                  HTML pour le champ « description » (sans H1)
-                  {latest.content && (
-                    <span className="ml-2 font-normal text-muted-foreground/70">
-                      {latest.content.length} car.
-                    </span>
-                  )}
+                  Écart revendiqué avec la mère et les sœurs
                 </p>
-                {latest.content && <CopyButton value={latest.content} />}
+                <p className="rounded-lg bg-muted px-3 py-2 text-sm">
+                  {payload.structured.differentiationFromFamily}
+                </p>
               </div>
-              <pre className="max-h-96 overflow-auto rounded-lg bg-muted px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap ">
-                {latest.content || "—"}
-              </pre>
-            </div>
+            )}
+            <HtmlOutput
+              label="Description COURTE — haut de page"
+              value={latest.short_description}
+            />
+            <HtmlOutput
+              label="Description LONGUE — bas de page (sans H1)"
+              value={latest.content}
+            />
             <div className="border-t border-border pt-4 ">
               <ChecksList checks={checksFromPayload(latest.payload)} />
             </div>

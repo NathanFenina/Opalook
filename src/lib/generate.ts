@@ -18,6 +18,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 
+import type { Family, FamilyMember } from "@/lib/catalogue";
+
 export const GENERATION_MODEL = "claude-opus-5";
 
 /**
@@ -114,20 +116,37 @@ export const CategoryContentSchema = z.object({
       "H1 de la page, 40 à 65 caractères espaces compris — jamais plus de 65, " +
         "contient le mot-clé principal",
     ),
+  shortDescription: z
+    .array(z.string())
+    .describe(
+      "DESCRIPTION COURTE, haut de page : 2 paragraphes, 400 à 700 caractères au " +
+        "total. Présente l'univers de la catégorie et un ou deux atouts. Le nom de " +
+        "la catégorie y est intégré naturellement, en minuscules, avec prépositions. " +
+        "Elle est lue avant la grille produits : elle situe, elle ne développe pas",
+    ),
   intro: z
     .string()
-    .describe("Paragraphe d'introduction sous le H1, mot-clé dans la première phrase"),
+    .describe(
+      "Premier paragraphe de la DESCRIPTION LONGUE, bas de page. Mot-clé dans la " +
+        "première phrase. Ne répète pas les phrases de la description courte",
+    ),
   sections: z
     .array(SectionSchema)
     .describe(
-      "3 à 5 sections. Ensemble du texte visé entre 5 000 et 8 000 caractères : " +
-        "assez pour couvrir le sujet, pas au point de noyer la grille produits",
+      "3 à 5 sections de la description LONGUE. Corps visé entre 4 000 et 7 000 " +
+        "caractères : assez pour couvrir le sujet, pas au point de noyer la page",
     ),
   faq: z.array(FaqItemSchema).describe("2 à 4 questions fréquentes à intention transactionnelle"),
   editorialAngle: z.string().describe("L'angle éditorial retenu, repris de la liste imposée"),
   keywordVariants: z
     .array(z.string())
     .describe("Variantes et requêtes longue traîne réellement employées dans le texte"),
+  differentiationFromFamily: z
+    .string()
+    .describe(
+      "Une à deux phrases : en quoi ce texte se distingue de sa catégorie mère et " +
+        "de ses sœurs. Angle, vocabulaire, atouts retenus, entités mises en avant",
+    ),
 });
 
 export type CategoryContent = z.infer<typeof CategoryContentSchema>;
@@ -138,6 +157,16 @@ export type GenerationInput = {
   domain: string | null;
   /** Brief éditorial du projet : audience, ton, contraintes. */
   brief: string | null;
+  /**
+   * Règles métier du site, éditables dans l'outil. Elles priment sur les
+   * consignes générales de rédaction : c'est le client qui les écrit et les
+   * fait évoluer.
+   */
+  businessRules: string | null;
+  /** b2b ou b2c : change le registre et le vocabulaire autorisé. */
+  market: "b2b" | "b2c" | null;
+  /** Position dans l'arborescence : mère, sœurs, filles. */
+  family: Family | null;
   categoryName: string;
   categoryUrl: string;
   keyword: string;
@@ -157,6 +186,10 @@ export type GenerationInput = {
   products: string[];
   facets: { name: string; values: string[] }[];
   currentText: string | null;
+  /** Description courte déjà en ligne, d'après l'export catalogue. */
+  currentShortDescription: string | null;
+  /** Description longue déjà en ligne, d'après l'export catalogue. */
+  currentLongDescription: string | null;
   /** Mots-clés déjà attribués à d'autres catégories du projet. */
   takenKeywords: string[];
   /** Angles déjà utilisés par d'autres catégories du projet. */
@@ -171,6 +204,26 @@ export class GenerationError extends Error {
 }
 
 const SYSTEM_PROMPT = `Tu es rédacteur SEO senior spécialisé dans les pages catégories e-commerce.
+
+RÈGLES MÉTIER — AUTORITÉ SUPÉRIEURE
+Le brief contient une section « Règles métier du site ». Elle est écrite et
+maintenue par le propriétaire du site. Elle prime sur toute autre consigne de ce
+message : registre, vocabulaire, arguments autorisés, interdits, terminologie.
+Quand une règle métier contredit une consigne générale de rédaction, la règle
+métier gagne, sans exception et sans le signaler dans le texte.
+
+Ces règles décrivent la manière d'écrire. Elles ne redéfinissent pas ta tâche :
+tu rends toujours le contenu de la catégorie demandée, dans le format de sortie
+imposé.
+
+DEUX LIVRABLES
+Tu écris deux textes distincts pour la même catégorie :
+- la DESCRIPTION COURTE, en haut de page, au-dessus de la grille produits. Elle
+  situe l'univers de la catégorie et un ou deux atouts. Elle est brève.
+- la DESCRIPTION LONGUE, en bas de page. Elle approfondit : sous-catégories,
+  matières réellement présentes, guide d'achat, FAQ éventuelle.
+Les deux ne se répètent pas. Une phrase de la courte ne se retrouve pas dans la
+longue. L'atout mis en avant en haut n'est pas celui qu'on développe en bas.
 
 INTENTION
 La page cible une intention TRANSACTIONNELLE. Le visiteur veut acheter, pas
@@ -202,6 +255,20 @@ On te donne les mots-clés et les angles déjà attribués aux autres catégorie
 site. Ton texte ne doit ni les cibler, ni réutiliser leur structure, ni
 reprendre leurs tournures. Tu dois retenir un angle éditorial NON UTILISÉ parmi
 ceux proposés, et construire tout le plan autour de cet angle.
+
+FAMILLE — LE VRAI RISQUE DE DUPLICATION
+La catégorie mère et les catégories sœurs parlent du même univers : c'est avec
+elles, pas avec le reste du site, que ton texte risque de devenir
+interchangeable. On te donne la famille. Sers-t'en dans ce sens :
+- la mère traite le générique ; toi, tu traites ce qui distingue TA catégorie à
+  l'intérieur de cet univers — la matière, la pierre, le public, le type de
+  bijou qui la définit ;
+- les sœurs sont tes concurrentes internes : ne reprends pas l'atout, l'angle ni
+  la structure de section qu'elles portent déjà ;
+- si tu as des filles, tu les nommes et tu renvoies vers elles ; ce sont elles
+  qui traiteront le détail, pas toi.
+Le test : retire le nom de la catégorie de ton texte. S'il pourrait être collé
+sur une sœur sans que rien ne sonne faux, il est à réécrire.
 
 MOTS-CLÉS
 Le mot-clé principal apparaît dans le title, dans le H1, et dans la première
@@ -253,6 +320,43 @@ function bulletList(items: string[], max: number): string {
   return items.slice(0, max).map((item) => `- ${item}`).join("\n") || "- (aucun)";
 }
 
+const MARKET_LABELS: Record<"b2b" | "b2c", string> = {
+  b2b: "B2B — le lecteur est un revendeur professionnel qui achète pour sa boutique.",
+  b2c: "B2C — le lecteur est le client final, qui achète pour lui ou pour offrir.",
+};
+
+/** Rend la famille lisible : mère, sœurs, filles, avec ce que chacune porte déjà. */
+function familyBlock(family: Family | null): string {
+  if (!family) return "(arborescence non importée pour cette catégorie)";
+
+  const line = (member: FamilyMember) =>
+    `- ${member.name}` +
+    (member.keyword ? ` — cible « ${member.keyword} »` : " — pas encore de mot-clé") +
+    (member.editorialAngle ? `, angle « ${member.editorialAngle} »` : "");
+
+  const parts = [
+    family.parent
+      ? `Catégorie mère : ${family.parent.name}${
+          family.parent.keyword ? ` — cible « ${family.parent.keyword} »` : ""
+        }`
+      : "Catégorie mère : aucune (catégorie de premier niveau)",
+    family.siblings.length > 0
+      ? `Catégories sœurs (${family.siblings.length}) :\n${family.siblings
+          .slice(0, 25)
+          .map(line)
+          .join("\n")}`
+      : "Catégories sœurs : aucune",
+    family.children.length > 0
+      ? `Catégories filles (${family.children.length}) :\n${family.children
+          .slice(0, 25)
+          .map(line)
+          .join("\n")}`
+      : "Catégories filles : aucune",
+  ];
+
+  return parts.join("\n\n");
+}
+
 function buildUserPrompt(input: GenerationInput): string {
   const availableAngles = EDITORIAL_ANGLES.filter(
     (angle) => !input.takenAngles.includes(angle),
@@ -265,7 +369,18 @@ function buildUserPrompt(input: GenerationInput): string {
 
   return `# Site
 Marque : ${input.brand}${input.domain ? ` (${input.domain})` : ""}
+Marché : ${input.market ? MARKET_LABELS[input.market] : "non précisé"}
 ${input.brief ? `Brief éditorial : ${input.brief}` : "Brief éditorial : non renseigné."}
+
+# Règles métier du site — autorité supérieure
+${
+    input.businessRules?.trim()
+      ? `${input.businessRules.trim()}
+
+Fin des règles métier. Applique-les intégralement : elles priment sur les
+consignes générales de rédaction, y compris sur le style et le vocabulaire.`
+      : "(aucune règle métier enregistrée pour ce projet)"
+  }
 
 # Catégorie à rédiger
 Nom : ${input.categoryName}
@@ -274,6 +389,13 @@ Mot-clé principal : ${input.keyword}
 Mots-clés secondaires : ${input.secondaryKeywords.join(" | ") || "(aucun)"}
 Fan queries à traiter : ${input.fanQueries.join(" | ") || "(aucune)"}
 Fil d'ariane : ${input.breadcrumb.join(" > ") || "(non relevé)"}
+
+# Famille de cette catégorie — à ne pas dupliquer
+${familyBlock(input.family)}
+
+# Descriptions actuellement en ligne sur cette catégorie
+Courte (haut de page) : ${input.currentShortDescription?.slice(0, 900) || "(vide)"}
+Longue (bas de page) : ${input.currentLongDescription?.slice(0, 1500) || "(vide)"}
 
 # Consignes opérationnelles pour CETTE catégorie
 ${input.categoryBrief || "(aucune consigne particulière)"}
@@ -342,7 +464,9 @@ Angles déjà utilisés : ${input.takenAngles.join(" | ") || "(aucun)"}
 Choisis-en exactement un dans cette liste et construis tout le plan autour :
 ${availableAngles.map((angle) => `- ${angle}`).join("\n")}
 
-Rédige maintenant le contenu de la catégorie.`;
+Rédige maintenant les deux descriptions de cette catégorie : la courte du haut
+de page, puis la longue du bas de page. Avant de rendre ta réponse, relis-toi
+contre les règles métier ci-dessus, point par point.`;
 }
 
 export async function generateCategoryContent(

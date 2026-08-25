@@ -17,6 +17,8 @@ import {
 import { StatusSelect } from "@/components/status-select";
 import { createCategory, saveProjectBrief } from "../../actions";
 import {
+  BusinessRulesForm,
+  ImportCatalogueForm,
   ImportCategoriesForm,
   ImportGscForm,
   ImportSemrushForm,
@@ -54,7 +56,7 @@ export default async function ProjectPage({
 
   const { data: project } = await supabase
     .from("projects")
-    .select("id, name, domain, notes")
+    .select("id, name, domain, notes, business_rules, market")
     .eq("id", id)
     .maybeSingle();
 
@@ -173,21 +175,44 @@ export default async function ProjectPage({
       )}
 
       <Card
+        title="Règles métier du site"
+        description="Le cadre que chaque texte doit respecter. Modifiable ici : ces règles évoluent, et elles sont injectées telles quelles à chaque génération. Un contrôle automatique signale ensuite les écarts détectables."
+      >
+        <BusinessRulesForm projectId={project.id} rules={project.business_rules} />
+      </Card>
+
+      <Card
         title="Brief éditorial"
-        description="Injecté tel quel dans le prompt de rédaction : audience, ton, contraintes, arguments à mettre en avant."
+        description="Complément court aux règles métier : contexte, priorités du moment, arguments à pousser. Le brief oriente, les règles contraignent."
       >
         <form action={saveProjectBrief} className="space-y-4">
           <input type="hidden" name="project_id" value={project.id} />
-          <Field label="Domaine">
-            <Input
-              name="domain"
-              defaultValue={project.domain ?? ""}
-              placeholder="client-x.fr"
-            />
-          </Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Domaine">
+              <Input
+                name="domain"
+                defaultValue={project.domain ?? ""}
+                placeholder="client-x.fr"
+              />
+            </Field>
+            <Field
+              label="Marché"
+              hint="Détermine le registre et les mots interdits contrôlés automatiquement."
+            >
+              <select
+                name="market"
+                defaultValue={project.market ?? ""}
+                className="border-input bg-transparent dark:bg-input/30 h-9 w-full rounded-md border px-3 py-1 text-sm shadow-xs outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              >
+                <option value="">Non précisé</option>
+                <option value="b2b">B2B — revendeurs professionnels</option>
+                <option value="b2c">B2C — client final</option>
+              </select>
+            </Field>
+          </div>
           <Field
             label="Brief"
-            hint="Ex. : grossiste B2B, s'adresse à des revendeurs professionnels, insister sur les quantités minimales et les marges."
+            hint="Ex. : prioriser les catégories à fort volume, insister ce trimestre sur les nouveautés."
           >
             <Textarea
               name="notes"
@@ -202,8 +227,15 @@ export default async function ProjectPage({
       </Card>
 
       <Card
+        title="Importer le catalogue PrestaShop"
+        description="Liste faisant autorité des catégories, avec l'arborescence et les descriptions déjà en ligne. C'est la seule source qui donne la mère et les sœurs de chaque catégorie — celles dont il faut se démarquer."
+      >
+        <ImportCatalogueForm projectId={project.id} />
+      </Card>
+
+      <Card
         title="Importer les URL de catégories"
-        description="Colle la liste complète en une fois. Réimporter la même liste ne crée pas de doublons."
+        description="À la main, quand il n'y a pas d'export catalogue. Réimporter la même liste ne crée pas de doublons."
       >
         <ImportCategoriesForm projectId={project.id} />
       </Card>

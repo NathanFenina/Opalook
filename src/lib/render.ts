@@ -55,6 +55,23 @@ export function renderCategoryHtml(
 }
 
 /**
+ * Description COURTE, en HTML, pour le haut de la page catégorie.
+ *
+ * PrestaShop la place au-dessus de la grille produits, dans un champ distinct
+ * de la description longue : les deux se collent séparément.
+ */
+export function renderShortDescriptionHtml(content: CategoryContent): string {
+  return content.shortDescription
+    .map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`)
+    .join("\n");
+}
+
+/** Description courte en texte brut, pour le contrôle des règles métier. */
+export function renderShortDescriptionText(content: CategoryContent): string {
+  return content.shortDescription.join("\n\n");
+}
+
+/**
  * Version texte, pour le scoring et le calcul de similarité.
  *
  * Les intertitres gardent leur marqueur `##` : sans lui, le contrôle de

@@ -10,9 +10,22 @@ import {
   suggestKeywords,
   GenerationError,
   GENERATION_MODEL,
+  type CategoryContent,
   type KeywordSuggestion,
 } from "@/lib/generate";
-import { renderCategoryHtml, renderCategoryText } from "@/lib/render";
+import {
+  buildFamily,
+  parseCatalogueCsv,
+  CatalogueParseError,
+  type Family,
+} from "@/lib/catalogue";
+import { checkCompliance, type ComplianceReport, type Market } from "@/lib/compliance";
+import {
+  renderCategoryHtml,
+  renderCategoryText,
+  renderShortDescriptionHtml,
+  renderShortDescriptionText,
+} from "@/lib/render";
 import { extractFromUrl, ExtractionError } from "@/lib/extract";
 import {
   parseGscCsv,
@@ -98,6 +111,151 @@ export type GenerationState = {
   score?: number;
 };
 
+/** Ce que le projet impose et ce que les autres catégories occupent déjà. */
+type ProjectContext = {
+  takenKeywords: string[];
+  takenAngles: string[];
+  family: Family | null;
+};
+
+type SupabaseClient = Awaited<ReturnType<typeof createClient>>;
+
+/**
+ * Rassemble en une passe ce qui empêche deux textes de se ressembler : les
+ * mots-clés et les angles déjà attribués sur le site, et la position de la
+ * catégorie dans son arborescence.
+ *
+ * Les deux niveaux ne servent pas à la même chose. Le premier évite la
+ * cannibalisation à l'échelle du site ; le second évite le texte
+ * interchangeable entre une catégorie et ses sœurs, qui est le risque réel
+ * puisqu'elles parlent du même univers.
+ */
+async function loadProjectContext(
+  supabase: SupabaseClient,
+  category: {
+    id: string;
+    project_id: string;
+    external_id: number | null;
+    parent_external_id: number | null;
+    name: string;
+    url: string;
+    target_keyword: string | null;
+  },
+): Promise<ProjectContext> {
+  const { data: rows } = await supabase
+    .from("categories")
+    .select(
+      "id, external_id, parent_external_id, name, url, target_keyword, optimizations(editorial_angle, version)",
+    )
+    .eq("project_id", category.project_id);
+
+  const all = rows ?? [];
+  const takenKeywords: string[] = [];
+  const takenAngles: string[] = [];
+  const angles = new Map<string, string | null>();
+
+  for (const row of all) {
+    if (row.id === category.id) continue;
+    if (row.target_keyword) takenKeywords.push(row.target_keyword);
+
+    const latest = [...(row.optimizations ?? [])].sort((a, b) => b.version - a.version)[0];
+    if (latest?.editorial_angle) {
+      angles.set(row.id, latest.editorial_angle);
+      if (!takenAngles.includes(latest.editorial_angle)) {
+        takenAngles.push(latest.editorial_angle);
+      }
+    }
+  }
+
+  const family =
+    category.external_id === null ? null : buildFamily(category, all, angles);
+
+  return { takenKeywords, takenAngles, family };
+}
+
+/**
+ * Rend, note, contrôle et archive une version.
+ *
+ * Le contrôle des règles métier porte sur les deux livrables réunis : un
+ * interdit dans la description courte compte autant que dans la longue.
+ */
+async function persistOptimization(
+  supabase: SupabaseClient,
+  args: {
+    categoryId: string;
+    categoryName: string;
+    keyword: string;
+    market: Market;
+    content: CategoryContent;
+    userId: string;
+    groundedInPage: boolean;
+    steps?: PipelineStep[];
+  },
+): Promise<{ score: number; compliance: ComplianceReport; error: string | null }> {
+  const { content } = args;
+
+  const shortHtml = renderShortDescriptionHtml(content);
+  const shortText = renderShortDescriptionText(content);
+  const longHtml = renderCategoryHtml(content);
+  const longText = renderCategoryText(content);
+
+  const { checks, score } = audit(
+    {
+      title: content.title,
+      metaDescription: content.metaDescription,
+      h1: content.h1,
+      content: longText,
+    },
+    args.keyword,
+  );
+
+  const compliance = checkCompliance(`${shortText}\n\n${longText}`, {
+    market: args.market,
+    categoryName: args.categoryName,
+  });
+
+  const { error } = await supabase.from("optimizations").insert({
+    category_id: args.categoryId,
+    title: content.title,
+    meta_description: content.metaDescription,
+    h1: content.h1,
+    short_description: shortHtml,
+    content: longHtml,
+    score,
+    engine: GENERATION_MODEL,
+    editorial_angle: content.editorialAngle,
+    payload: {
+      checks,
+      structured: content,
+      plain: longText,
+      shortPlain: shortText,
+      compliance,
+      ...(args.steps ? { steps: args.steps } : {}),
+      // Une version rédigée sans relevé de page ne peut pas être jugée comme une
+      // autre : les matières et références qu'elle cite ne sont pas vérifiées
+      // contre le catalogue.
+      groundedInPage: args.groundedInPage,
+    },
+    created_by: args.userId,
+  });
+
+  return { score, compliance, error: error?.message ?? null };
+}
+
+/** Une phrase sur l'état du contrôle métier, à coller au message de retour. */
+function complianceSummary(report: ComplianceReport): string {
+  const errors = report.issues.filter((issue) => issue.severity === "erreur").length;
+  const warnings = report.issues.length - errors;
+
+  if (errors === 0 && warnings === 0) return " Règles métier : aucun écart détecté.";
+  if (errors === 0) {
+    return ` Règles métier : ${warnings} point(s) à vérifier à l'œil.`;
+  }
+  return ` Règles métier : ${errors} interdit(s) à corriger avant publication${
+    warnings > 0 ? `, ${warnings} point(s) à vérifier` : ""
+  }.`;
+}
+
 /**
  * Passe la catégorie à la moulinette : génération par Claude, rendu HTML,
  * audit, puis archivage en nouvelle version.
@@ -117,7 +275,7 @@ export async function runMoulinette(
 
   const { data: category, error: readError } = await supabase
     .from("categories")
-    .select("*, projects(id, name, domain, notes)")
+    .select("*, projects(id, name, domain, notes, business_rules, market)")
     .eq("id", categoryId)
     .single();
 
@@ -130,6 +288,8 @@ export async function runMoulinette(
     name: string;
     domain: string | null;
     notes: string | null;
+    business_rules: string | null;
+    market: string | null;
   } | null;
 
   const keyword = (category.target_keyword ?? "").trim();
@@ -141,24 +301,10 @@ export async function runMoulinette(
     };
   }
 
-  // Ce qui est déjà attribué ailleurs sur le même site.
-  const { data: siblings } = await supabase
-    .from("categories")
-    .select("id, target_keyword, optimizations(editorial_angle, version)")
-    .eq("project_id", category.project_id)
-    .neq("id", categoryId);
-
-  const takenKeywords: string[] = [];
-  const takenAngles: string[] = [];
-  for (const sibling of siblings ?? []) {
-    if (sibling.target_keyword) takenKeywords.push(sibling.target_keyword);
-    const latest = [...(sibling.optimizations ?? [])].sort(
-      (a, b) => b.version - a.version,
-    )[0];
-    if (latest?.editorial_angle && !takenAngles.includes(latest.editorial_angle)) {
-      takenAngles.push(latest.editorial_angle);
-    }
-  }
+  const { takenKeywords, takenAngles, family } = await loadProjectContext(
+    supabase,
+    category,
+  );
 
   const source = (category.source_data ?? {}) as {
     products?: string[];
@@ -179,6 +325,9 @@ export async function runMoulinette(
       brand: project?.name ?? "",
       domain: project?.domain ?? null,
       brief: project?.notes ?? null,
+      businessRules: project?.business_rules ?? null,
+      market: (project?.market ?? null) as Market,
+      family,
       categoryName: category.name,
       categoryUrl: category.url,
       keyword,
@@ -192,6 +341,8 @@ export async function runMoulinette(
       products: source.products ?? [],
       facets: source.facets ?? [],
       currentText: category.source_content,
+      currentShortDescription: category.catalog_short_description,
+      currentLongDescription: category.catalog_long_description,
       takenKeywords,
       takenAngles,
     });
@@ -202,40 +353,20 @@ export async function runMoulinette(
     return { status: "error", message: (error as Error).message };
   }
 
-  const html = renderCategoryHtml(content);
-  const plain = renderCategoryText(content);
-  const { checks, score } = audit(
-    {
-      title: content.title,
-      metaDescription: content.metaDescription,
-      h1: content.h1,
-      content: plain,
-    },
+  const { score, compliance, error: insertError } = await persistOptimization(supabase, {
+    categoryId,
+    categoryName: category.name,
     keyword,
-  );
-
-  const { error: insertError } = await supabase.from("optimizations").insert({
-    category_id: categoryId,
-    title: content.title,
-    meta_description: content.metaDescription,
-    h1: content.h1,
-    content: html,
-    score,
-    engine: GENERATION_MODEL,
-    editorial_angle: content.editorialAngle,
-    payload: {
-      checks,
-      structured: content,
-      plain,
-      groundedInPage: (source.products?.length ?? 0) > 0,
-    },
-    created_by: user.id,
+    market: (project?.market ?? null) as Market,
+    content,
+    userId: user.id,
+    groundedInPage: (source.products?.length ?? 0) > 0,
   });
 
   if (insertError) {
     return {
       status: "error",
-      message: `Enregistrement de l'optimisation impossible : ${insertError.message}`,
+      message: `Enregistrement de l'optimisation impossible : ${insertError}`,
     };
   }
 
@@ -244,7 +375,9 @@ export async function runMoulinette(
 
   return {
     status: "ok",
-    message: `Texte généré — angle retenu : « ${content.editorialAngle} ». Score ${score}/100.`,
+    message:
+      `Texte généré — angle retenu : « ${content.editorialAngle} ». Score ${score}/100.` +
+      complianceSummary(compliance),
     score,
   };
 }
@@ -351,17 +484,143 @@ export async function saveProjectBrief(formData: FormData) {
   const projectId = text(formData, "project_id");
   if (!projectId) return;
 
+  const market = text(formData, "market");
+
   const { error } = await supabase
     .from("projects")
     .update({
       domain: optionalText(formData, "domain"),
       notes: optionalText(formData, "notes"),
+      market: market === "b2b" || market === "b2c" ? market : null,
     })
     .eq("id", projectId);
 
   if (error) throw new Error(`Enregistrement impossible : ${error.message}`);
 
   revalidatePath(`/projects/${projectId}`);
+}
+
+export type RulesState = {
+  status: "idle" | "ok" | "error";
+  message: string;
+};
+
+/**
+ * Enregistre les règles métier du site.
+ *
+ * Le client a demandé explicitement qu'elles soient modifiables dans l'outil :
+ * elles évoluent, et les figer dans le code obligerait à un déploiement à
+ * chaque virgule. Elles sont injectées telles quelles dans le prompt.
+ */
+export async function saveBusinessRules(
+  _prev: RulesState,
+  formData: FormData,
+): Promise<RulesState> {
+  const { supabase } = await requireUser();
+
+  const projectId = text(formData, "project_id");
+  if (!projectId) return { status: "error", message: "Projet manquant." };
+
+  const rules = String(formData.get("business_rules") ?? "").trim();
+
+  const { error } = await supabase
+    .from("projects")
+    .update({ business_rules: rules || null })
+    .eq("id", projectId);
+
+  if (error) {
+    return { status: "error", message: `Enregistrement impossible : ${error.message}` };
+  }
+
+  revalidatePath(`/projects/${projectId}`);
+
+  return {
+    status: "ok",
+    message: rules
+      ? `Règles métier enregistrées (${rules.length} caractères). Elles s'appliquent dès la prochaine génération.`
+      : "Règles métier vidées. Les textes seront rédigés sans cadre métier.",
+  };
+}
+
+/* ------------------------------------------- import du catalogue PrestaShop */
+
+export type CatalogueImportState = {
+  status: "idle" | "ok" | "error";
+  message: string;
+  skipped?: string[];
+};
+
+/**
+ * Importe l'export de catalogue PrestaShop : la liste faisant autorité des
+ * catégories, leur arborescence et les descriptions déjà en ligne.
+ *
+ * L'upsert porte sur l'URL, pas sur l'identifiant PrestaShop : une catégorie
+ * déjà suivie — créée depuis un export Search Console, par exemple — est
+ * complétée au lieu d'être dupliquée. Les mots-clés, briefs et optimisations
+ * déjà saisis ne sont jamais écrasés.
+ */
+export async function importCatalogue(
+  _prev: CatalogueImportState,
+  formData: FormData,
+): Promise<CatalogueImportState> {
+  const { supabase } = await requireUser();
+
+  const projectId = text(formData, "project_id");
+  if (!projectId) return { status: "error", message: "Projet manquant." };
+
+  const file = formData.get("file");
+  let content = String(formData.get("csv") ?? "").trim();
+  if (!content && file instanceof File && file.size > 0) content = await file.text();
+  if (!content) {
+    return { status: "error", message: "Dépose l'export catalogue ou colle son contenu." };
+  }
+
+  let parsed;
+  try {
+    parsed = parseCatalogueCsv(content, optionalText(formData, "locale") ?? undefined);
+  } catch (error) {
+    if (error instanceof CatalogueParseError) {
+      return { status: "error", message: error.message };
+    }
+    return { status: "error", message: (error as Error).message };
+  }
+
+  const { rows, locale, locales, skipped } = parsed;
+
+  // Les noms ne remplacent pas ceux qu'on a pu corriger à la main ; le reste
+  // vient du catalogue, qui fait autorité.
+  const { error, count } = await supabase.from("categories").upsert(
+    rows.map((row) => ({
+      project_id: projectId,
+      url: row.url,
+      name: row.name,
+      external_id: row.externalId,
+      parent_external_id: row.parentExternalId,
+      products_count: row.productsCount,
+      catalog_short_description: row.shortDescription,
+      catalog_long_description: row.longDescription,
+    })),
+    { onConflict: "project_id,url", count: "exact" },
+  );
+
+  if (error) {
+    return { status: "error", message: `Import impossible : ${error.message}` };
+  }
+
+  revalidatePath(`/projects/${projectId}`);
+
+  const withParent = rows.filter((row) => row.parentExternalId !== null).length;
+  const withLong = rows.filter((row) => row.longDescription).length;
+
+  return {
+    status: "ok",
+    message:
+      `${rows.length} catégories importées en ${locale} (langues du fichier : ${locales.join(", ")}). ` +
+      `${withParent} rattachées à une mère, ${withLong} avec une description longue déjà en ligne. ` +
+      `${count ?? 0} lignes écrites.` +
+      (skipped.length > 0 ? ` ${skipped.length} ligne(s) écartée(s).` : ""),
+    skipped: skipped.slice(0, 15).map((item) => `Ligne ${item.line} : ${item.reason}`),
+  };
 }
 
 /* ------------------------------------------------ import en masse des URL */
@@ -925,7 +1184,7 @@ export async function runPipeline(
 
   const { data: category, error: readError } = await supabase
     .from("categories")
-    .select("*, projects(id, name, domain, notes)")
+    .select("*, projects(id, name, domain, notes, business_rules, market)")
     .eq("id", categoryId)
     .single();
 
@@ -938,7 +1197,10 @@ export async function runPipeline(
     name: string;
     domain: string | null;
     notes: string | null;
+    business_rules: string | null;
+    market: string | null;
   } | null;
+  const market = (project?.market ?? null) as Market;
 
   const keyword = (category.target_keyword ?? "").trim();
   if (!keyword) {
@@ -1040,21 +1302,10 @@ export async function runPipeline(
   };
   const gscQueries = gsc.queries ?? [];
 
-  const { data: siblings } = await supabase
-    .from("categories")
-    .select("id, target_keyword, optimizations(editorial_angle, version)")
-    .eq("project_id", category.project_id)
-    .neq("id", categoryId);
-
-  const takenKeywords: string[] = [];
-  const takenAngles: string[] = [];
-  for (const sibling of siblings ?? []) {
-    if (sibling.target_keyword) takenKeywords.push(sibling.target_keyword);
-    const last = [...(sibling.optimizations ?? [])].sort((a, b) => b.version - a.version)[0];
-    if (last?.editorial_angle && !takenAngles.includes(last.editorial_angle)) {
-      takenAngles.push(last.editorial_angle);
-    }
-  }
+  const { takenKeywords, takenAngles, family } = await loadProjectContext(
+    supabase,
+    category,
+  );
 
   let secondaryKeywords = category.secondary_keywords ?? [];
   let fanQueries = category.fan_queries ?? [];
@@ -1110,6 +1361,9 @@ export async function runPipeline(
       brand: project?.name ?? "",
       domain: project?.domain ?? null,
       brief: project?.notes ?? null,
+      businessRules: project?.business_rules ?? null,
+      market,
+      family,
       categoryName: category.name,
       categoryUrl: category.url,
       keyword,
@@ -1123,6 +1377,8 @@ export async function runPipeline(
       products: source.products ?? [],
       facets: source.facets ?? [],
       currentText,
+      currentShortDescription: category.catalog_short_description,
+      currentLongDescription: category.catalog_long_description,
       takenKeywords,
       takenAngles,
     });
@@ -1132,48 +1388,37 @@ export async function runPipeline(
     return { status: "error", message, steps };
   }
 
-  const html = renderCategoryHtml(content);
-  const plain = renderCategoryText(content);
-  const { checks, score } = audit(
-    {
-      title: content.title,
-      metaDescription: content.metaDescription,
-      h1: content.h1,
-      content: plain,
-    },
-    keyword,
-  );
-
-  const { error: insertError } = await supabase.from("optimizations").insert({
-    category_id: categoryId,
-    title: content.title,
-    meta_description: content.metaDescription,
-    h1: content.h1,
-    content: html,
-    score,
-    engine: GENERATION_MODEL,
-    editorial_angle: content.editorialAngle,
-    payload: {
-      checks,
-      structured: content,
-      plain,
-      steps,
-      // Une version rédigée sans relevé de page ne peut pas être jugée comme
-      // une autre : les matières et références qu'elle cite ne sont pas
-      // vérifiées contre le catalogue.
-      groundedInPage: (source.products?.length ?? 0) > 0,
-    },
-    created_by: user.id,
-  });
-
-  if (insertError) {
-    return { status: "error", message: `Enregistrement impossible : ${insertError.message}`, steps };
-  }
-
   steps.push({
     label: "Rédaction",
     status: "ok",
-    detail: `Angle « ${content.editorialAngle} » · score ${score}/100`,
+    detail: `Angle « ${content.editorialAngle} » · deux descriptions produites`,
+  });
+
+  const { score, compliance, error: insertError } = await persistOptimization(supabase, {
+    categoryId,
+    categoryName: category.name,
+    keyword,
+    market,
+    content,
+    userId: user.id,
+    groundedInPage: (source.products?.length ?? 0) > 0,
+    steps,
+  });
+
+  if (insertError) {
+    return { status: "error", message: `Enregistrement impossible : ${insertError}`, steps };
+  }
+
+  const errors = compliance.issues.filter((issue) => issue.severity === "erreur");
+  steps.push({
+    label: "Contrôle des règles métier",
+    status: errors.length > 0 ? "error" : compliance.issues.length > 0 ? "skipped" : "ok",
+    detail:
+      errors.length > 0
+        ? errors.map((issue) => issue.rule).join(" · ")
+        : compliance.issues.length > 0
+          ? compliance.issues.map((issue) => issue.rule).join(" · ")
+          : `${compliance.passed} contrôles passés`,
   });
 
   await supabase.from("categories").update({ status: "optimized" }).eq("id", categoryId);
@@ -1185,7 +1430,8 @@ export async function runPipeline(
 
   return {
     status: "ok",
-    message: `Texte généré, score ${score}/100.${intentWarning}`,
+    message:
+      `Texte généré, score ${score}/100.${intentWarning}` + complianceSummary(compliance),
     steps,
   };
 }

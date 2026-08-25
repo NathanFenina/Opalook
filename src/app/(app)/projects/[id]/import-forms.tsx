@@ -4,11 +4,15 @@ import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
 
 import {
+  importCatalogue,
   importCategories,
   importGscData,
   importSemrushData,
+  saveBusinessRules,
   type BulkImportState,
+  type CatalogueImportState,
   type GscImportState,
+  type RulesState,
   type SemrushImportState,
 } from "../../actions";
 import { Field } from "@/components/app-ui";
@@ -62,6 +66,96 @@ export function ImportCategoriesForm({ projectId }: { projectId: string }) {
         />
       </Field>
       <Submit label="Importer les URL" pendingLabel="Import…" />
+      <Feedback status={state.status} message={state.message} />
+    </form>
+  );
+}
+
+const CATALOGUE_INITIAL: CatalogueImportState = { status: "idle", message: "" };
+
+/**
+ * Import de l'export catalogue PrestaShop.
+ *
+ * C'est la seule source qui porte l'arborescence. Sans elle, l'outil ne peut
+ * pas savoir qu'une catégorie a une mère et des sœurs, et donc pas différencier
+ * son texte de celui des catégories voisines — ce que la règle métier exige.
+ */
+export function ImportCatalogueForm({ projectId }: { projectId: string }) {
+  const [state, formAction] = useActionState(importCatalogue, CATALOGUE_INITIAL);
+
+  return (
+    <form action={formAction} className="space-y-4">
+      <input type="hidden" name="project_id" value={projectId} />
+      <Field
+        label="Fichier catalogue"
+        hint="Export PrestaShop : id_category, id_parent, products_count, puis name_xx, url_xx, description_xx, additional_description_xx par langue."
+      >
+        <Input
+          type="file"
+          name="file"
+          accept=".csv,text/csv,text/plain"
+          className="file:mr-3 file:rounded file:border-0 file:bg-slate-200 file:px-3 file:py-1 file:text-xs dark:file:bg-slate-800 dark:file:text-slate-200"
+        />
+      </Field>
+      <Field
+        label="Langue à importer"
+        hint="Vide = la première langue du fichier. Les autres langues restent dans le fichier et pourront être importées plus tard."
+      >
+        <Input name="locale" placeholder="fr" className="max-w-24" />
+      </Field>
+      <Submit label="Importer le catalogue" pendingLabel="Import…" />
+      <Feedback status={state.status} message={state.message} />
+
+      {state.skipped && state.skipped.length > 0 && (
+        <div className="space-y-1 rounded-lg bg-amber-50 px-3 py-2 text-xs dark:bg-amber-950/40">
+          <p className="font-medium text-amber-700 dark:text-amber-400">
+            Lignes écartées
+          </p>
+          <ul className="space-y-0.5 text-amber-700/80 dark:text-amber-400/80">
+            {state.skipped.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </form>
+  );
+}
+
+const RULES_INITIAL: RulesState = { status: "idle", message: "" };
+
+/**
+ * Éditeur des règles métier du site.
+ *
+ * Demandé explicitement par le client : ces règles évoluent, et les figer dans
+ * le code obligerait à un déploiement à chaque ajustement. Le contenu est
+ * injecté tel quel dans le prompt, avec autorité supérieure sur les consignes
+ * générales de rédaction.
+ */
+export function BusinessRulesForm({
+  projectId,
+  rules,
+}: {
+  projectId: string;
+  rules: string | null;
+}) {
+  const [state, formAction] = useActionState(saveBusinessRules, RULES_INITIAL);
+
+  return (
+    <form action={formAction} className="space-y-4">
+      <input type="hidden" name="project_id" value={projectId} />
+      <Field
+        label="Règles métier"
+        hint="Qui parle et à qui, pool d'arguments autorisés, interdits, terminologie des matières, règles bébé et lithothérapie. Tout ce qui est écrit ici prime sur les consignes générales de rédaction."
+      >
+        <Textarea
+          name="business_rules"
+          rows={22}
+          defaultValue={rules ?? ""}
+          className="font-mono text-xs leading-relaxed"
+        />
+      </Field>
+      <Submit label="Enregistrer les règles" pendingLabel="Enregistrement…" />
       <Feedback status={state.status} message={state.message} />
     </form>
   );
