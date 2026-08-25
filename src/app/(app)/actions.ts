@@ -122,13 +122,16 @@ type SupabaseClient = Awaited<ReturnType<typeof createClient>>;
 
 /**
  * Rassemble en une passe ce qui empêche deux textes de se ressembler : les
- * mots-clés et les angles déjà attribués sur le site, et la position de la
- * catégorie dans son arborescence.
+ * mots-clés déjà attribués sur le site, les angles occupés dans la famille, et
+ * la position de la catégorie dans son arborescence.
  *
- * Les deux niveaux ne servent pas à la même chose. Le premier évite la
- * cannibalisation à l'échelle du site ; le second évite le texte
- * interchangeable entre une catégorie et ses sœurs, qui est le risque réel
- * puisqu'elles parlent du même univers.
+ * Les deux périmètres sont volontairement différents. Un mot-clé ne peut cibler
+ * qu'une seule page du site, sinon les deux se cannibalisent : l'exclusion est
+ * donc globale. Un angle éditorial, lui, ne s'exclut que dans la famille — il
+ * n'y en a que dix, et les réserver à l'échelle du projet les épuiserait dès la
+ * onzième catégorie, laissant le modèle sans aucun angle à retenir. Deux
+ * catégories qui ne se croisent jamais peuvent partager un angle sans dommage ;
+ * deux sœurs, non.
  */
 async function loadProjectContext(
   supabase: SupabaseClient,
@@ -151,7 +154,6 @@ async function loadProjectContext(
 
   const all = rows ?? [];
   const takenKeywords: string[] = [];
-  const takenAngles: string[] = [];
   const angles = new Map<string, string | null>();
 
   for (const row of all) {
@@ -159,18 +161,25 @@ async function loadProjectContext(
     if (row.target_keyword) takenKeywords.push(row.target_keyword);
 
     const latest = [...(row.optimizations ?? [])].sort((a, b) => b.version - a.version)[0];
-    if (latest?.editorial_angle) {
-      angles.set(row.id, latest.editorial_angle);
-      if (!takenAngles.includes(latest.editorial_angle)) {
-        takenAngles.push(latest.editorial_angle);
-      }
-    }
+    if (latest?.editorial_angle) angles.set(row.id, latest.editorial_angle);
   }
 
   const family =
     category.external_id === null ? null : buildFamily(category, all, angles);
 
-  return { takenKeywords, takenAngles, family };
+  // Sans arborescence on n'a pas de famille : on retombe sur le projet entier,
+  // en se limitant aux angles les plus récents pour ne pas vider la liste.
+  const relatives = family
+    ? [family.parent, ...family.siblings, ...family.children]
+    : [...angles.values()].map((angle) => ({ editorialAngle: angle }));
+
+  const takenAngles: string[] = [];
+  for (const member of relatives) {
+    const angle = member?.editorialAngle;
+    if (angle && !takenAngles.includes(angle)) takenAngles.push(angle);
+  }
+
+  return { takenKeywords, takenAngles: takenAngles.slice(0, 8), family };
 }
 
 /**

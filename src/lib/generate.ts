@@ -358,9 +358,13 @@ function familyBlock(family: Family | null): string {
 }
 
 function buildUserPrompt(input: GenerationInput): string {
-  const availableAngles = EDITORIAL_ANGLES.filter(
+  // Filet de sécurité : une liste vide laisserait le modèle sans consigne alors
+  // que le système lui ordonne d'y choisir un angle. Mieux vaut proposer tous
+  // les angles que n'en proposer aucun.
+  const remaining = EDITORIAL_ANGLES.filter(
     (angle) => !input.takenAngles.includes(angle),
   );
+  const availableAngles = remaining.length > 0 ? remaining : EDITORIAL_ANGLES;
 
   const facetLines =
     input.facets
@@ -457,8 +461,8 @@ ${
   }
 
 # Déjà pris par d'autres catégories du site — à ne PAS cibler ni imiter
-Mots-clés : ${input.takenKeywords.slice(0, 60).join(" | ") || "(aucun)"}
-Angles déjà utilisés : ${input.takenAngles.join(" | ") || "(aucun)"}
+Mots-clés : ${input.takenKeywords.slice(0, 80).join(" | ") || "(aucun)"}
+Angles déjà utilisés dans la famille : ${input.takenAngles.join(" | ") || "(aucun)"}
 
 # Angle éditorial à retenir
 Choisis-en exactement un dans cette liste et construis tout le plan autour :
