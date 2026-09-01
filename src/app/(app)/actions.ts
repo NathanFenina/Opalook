@@ -251,6 +251,35 @@ async function persistOptimization(
   return { score, compliance, error: error?.message ?? null };
 }
 
+/**
+ * Écarte les propositions qui appartiennent déjà à une autre page.
+ *
+ * Le prompt interdit au modèle de proposer un mot-clé attribué ailleurs, mais
+ * une consigne n'est pas une garantie : il a proposé « colliers pierres
+ * naturelles en gros » comme secondaire à la catégorie mère, alors que c'est le
+ * mot-clé principal de sa fille. Optimiser la mère dessus, c'est exactement la
+ * cannibalisation qu'on cherche à éviter — et elle est d'autant plus nocive
+ * qu'elle oppose deux pages du même site.
+ *
+ * Le filtre est donc appliqué en dur après coup, sur une forme normalisée
+ * (accents et apostrophes neutralisés) pour qu'une variante d'écriture ne passe
+ * pas au travers.
+ */
+function rejectTakenKeywords(
+  proposed: string[],
+  reserved: string[],
+): { kept: string[]; rejected: string[] } {
+  const taken = new Set(reserved.map(keywordKey));
+  const kept: string[] = [];
+  const rejected: string[] = [];
+
+  for (const value of proposed) {
+    if (taken.has(keywordKey(value))) rejected.push(value);
+    else kept.push(value);
+  }
+  return { kept, rejected };
+}
+
 /** Une phrase sur l'état du contrôle métier, à coller au message de retour. */
 function complianceSummary(report: ComplianceReport): string {
   const errors = report.issues.filter((issue) => issue.severity === "erreur").length;
@@ -971,6 +1000,10 @@ export async function suggestKeywordsAction(
     .eq("project_id", category.project_id)
     .neq("id", categoryId);
 
+  const takenKeywords = (siblings ?? [])
+    .map((s) => s.target_keyword)
+    .filter((v): v is string => Boolean(v));
+
   try {
     const suggestion = await suggestKeywords({
       brand: project?.name ?? "",
@@ -980,20 +1013,38 @@ export async function suggestKeywordsAction(
       products: source.products ?? [],
       facets: source.facets ?? [],
       gscQueries: gsc.queries ?? [],
-      takenKeywords: (siblings ?? [])
-        .map((s) => s.target_keyword)
-        .filter((v): v is string => Boolean(v)),
+      takenKeywords,
     });
+
+    // Même filtre que dans le traitement complet : une proposition qui reprend
+    // le mot-clé d'une autre page ne doit pas arriver jusqu'à l'écran.
+    const reserved = new Set([...takenKeywords, keyword].map(keywordKey));
+    const filtered = {
+      secondaryKeywords: suggestion.secondaryKeywords.filter(
+        (s) => !reserved.has(keywordKey(s.keyword)),
+      ),
+      fanQueries: suggestion.fanQueries.filter((s) => !reserved.has(keywordKey(s.query))),
+    };
+
+    const dropped =
+      suggestion.secondaryKeywords.length +
+      suggestion.fanQueries.length -
+      filtered.secondaryKeywords.length -
+      filtered.fanQueries.length;
 
     const noPageData = (source.products?.length ?? 0) === 0;
 
     return {
       status: "ok",
-      message: noPageData
-        ? "Suggestions générées, mais sans les produits ni les facettes de la page : " +
-          "récupère d'abord la page pour des propositions ancrées dans le catalogue réel."
-        : "Suggestions générées à partir des produits et des filtres de la page.",
-      suggestion,
+      message:
+        (noPageData
+          ? "Suggestions générées, mais sans les produits ni les facettes de la page : " +
+            "récupère d'abord la page pour des propositions ancrées dans le catalogue réel."
+          : "Suggestions générées à partir des produits et des filtres de la page.") +
+        (dropped > 0
+          ? ` ${dropped} proposition(s) écartée(s) : déjà ciblée(s) par une autre page du site.`
+          : ""),
+      suggestion: filtered,
     };
   } catch (error) {
     if (error instanceof GenerationError) {
@@ -1331,27 +1382,43 @@ export async function runPipeline(
       takenKeywords,
     });
 
+    // Les mots-clés principaux des autres pages du site sont hors jeu, celui de
+    // la catégorie compris : il a déjà sa place dans le title et le H1.
+    const reserved = [...takenKeywords, keyword];
+    const secondaries = rejectTakenKeywords(
+      suggestion.secondaryKeywords.map((s) => s.keyword),
+      reserved,
+    );
+    const fans = rejectTakenKeywords(
+      suggestion.fanQueries.map((s) => s.query),
+      reserved,
+    );
+
     // On complète sans écraser : ce que tu as validé à la main reste prioritaire.
     const merge = (existing: string[], proposed: string[]) => {
       const seen = new Set(existing.map((v) => v.toLowerCase()));
       return [...existing, ...proposed.filter((v) => !seen.has(v.toLowerCase()))];
     };
 
-    secondaryKeywords = merge(
-      secondaryKeywords,
-      suggestion.secondaryKeywords.map((s) => s.keyword),
-    );
-    fanQueries = merge(fanQueries, suggestion.fanQueries.map((s) => s.query));
+    secondaryKeywords = merge(secondaryKeywords, secondaries.kept);
+    fanQueries = merge(fanQueries, fans.kept);
 
     await supabase
       .from("categories")
       .update({ secondary_keywords: secondaryKeywords, fan_queries: fanQueries })
       .eq("id", categoryId);
 
+    const rejected = [...secondaries.rejected, ...fans.rejected];
     steps.push({
       label: "Champ sémantique",
-      status: "ok",
-      detail: `${suggestion.secondaryKeywords.length} secondaires, ${suggestion.fanQueries.length} fan queries`,
+      status: rejected.length > 0 ? "skipped" : "ok",
+      detail:
+        `${secondaries.kept.length} secondaires, ${fans.kept.length} fan queries` +
+        (rejected.length > 0
+          ? ` · ${rejected.length} écarté(s), déjà ciblé(s) par une autre page : ${rejected
+              .slice(0, 5)
+              .join(", ")}`
+          : ""),
     });
   } catch (error) {
     const message = error instanceof GenerationError ? error.message : (error as Error).message;
