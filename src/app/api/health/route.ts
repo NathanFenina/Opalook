@@ -41,6 +41,7 @@ export async function GET() {
       branche: process.env.VERCEL_GIT_COMMIT_REF ?? null,
       variables: [
         describe("ANTHROPIC_API_KEY"),
+        describe("DATAFORSEO_BASE64"),
         describe("DATAFORSEO_LOGIN"),
         describe("DATAFORSEO_PASSWORD"),
         describe("FIRECRAWL_API_KEY"),

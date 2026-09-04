@@ -64,14 +64,28 @@ type DfsResponse = {
   }[];
 };
 
+/**
+ * Jeton d'authentification DataForSEO.
+ *
+ * L'API attend `Authorization: Basic <base64(login:password)>`. DataForSEO
+ * affiche cette chaîne déjà encodée dans son tableau de bord, et c'est souvent
+ * elle qu'on reçoit plutôt que le couple identifiant / mot de passe. On accepte
+ * donc les deux : le jeton pré-encodé s'il est fourni, sinon l'encodage du
+ * couple. Refuser le jeton obligerait à le décoder à la main pour le
+ * ré-encoder à l'identique — une manipulation inutile sur un secret.
+ */
 function credentials(): string {
+  const token = process.env.DATAFORSEO_BASE64?.trim();
+  if (token) return token;
+
   const login = process.env.DATAFORSEO_LOGIN;
   const password = process.env.DATAFORSEO_PASSWORD;
 
   if (!login || !password) {
     throw new SerpError(
-      "DATAFORSEO_LOGIN et DATAFORSEO_PASSWORD absents. Ajoute-les dans les variables " +
-        "d'environnement Vercel (Production et Preview), puis redéploie.",
+      "Identifiants DataForSEO absents. Ajoute soit DATAFORSEO_BASE64 (le jeton encodé " +
+        "affiché par DataForSEO), soit DATAFORSEO_LOGIN et DATAFORSEO_PASSWORD, dans les " +
+        "variables d'environnement Vercel (Production et Preview), puis redéploie.",
       "no_credentials",
     );
   }
@@ -177,7 +191,10 @@ export async function fetchSerp(
 
 /** Le compte DataForSEO est-il configuré ? Sert à décider d'un repli. */
 export function hasDataForSeoCredentials(): boolean {
-  return Boolean(process.env.DATAFORSEO_LOGIN && process.env.DATAFORSEO_PASSWORD);
+  return Boolean(
+    process.env.DATAFORSEO_BASE64 ||
+      (process.env.DATAFORSEO_LOGIN && process.env.DATAFORSEO_PASSWORD),
+  );
 }
 
 type InstantPagesResponse = {
