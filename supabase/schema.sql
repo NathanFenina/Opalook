@@ -198,11 +198,86 @@ create trigger optimizations_set_version
   before insert on public.optimizations
   for each row execute function public.set_optimization_version();
 
+/* ------------------------------------------------ partage d'un projet ---- */
+--
+-- Un projet a un propriétaire, et des invités. L'invitation porte sur une
+-- adresse e-mail plutôt que sur un identifiant d'utilisateur : on doit pouvoir
+-- ouvrir l'accès à quelqu'un qui n'a jamais ouvert l'outil, donc dont le compte
+-- n'existe pas encore.
+
+create table if not exists public.project_members (
+  project_id uuid not null references public.projects (id) on delete cascade,
+  email text not null,
+  role text not null default 'viewer',
+  invited_by uuid references auth.users (id) on delete set null,
+  created_at timestamptz not null default now(),
+  primary key (project_id, email)
+);
+
+alter table public.project_members drop constraint if exists project_members_role_check;
+alter table public.project_members
+  add constraint project_members_role_check check (role in ('viewer', 'editor'));
+
+comment on column public.project_members.role is
+  'viewer : lecture seule. editor : peut aussi modifier et lancer les traitements, donc consommer les crédits d''API.';
+
+create index if not exists project_members_email_idx on public.project_members (email);
+
+create or replace function public.normalize_member_email()
+returns trigger language plpgsql set search_path to '' as $$
+begin
+  new.email = lower(trim(new.email));
+  return new;
+end;
+$$;
+
+drop trigger if exists project_members_normalize_email on public.project_members;
+create trigger project_members_normalize_email
+  before insert or update on public.project_members
+  for each row execute function public.normalize_member_email();
+
+/* ------------------------------------------------------ droits d'accès --- */
+--
+-- SECURITY DEFINER n'est pas un raccourci ici : sans lui, la politique de
+-- `projects` interrogerait `project_members`, dont la politique interrogerait
+-- `projects`, et Postgres refuserait la récursion. Lire les deux tables hors
+-- RLS à l'intérieur d'une fonction casse le cycle. Le `search_path` vide évite
+-- qu'un objet homonyme placé ailleurs détourne l'appel.
+
+create or replace function public.current_email()
+returns text language sql stable security definer set search_path to '' as $$
+  select lower(coalesce(auth.jwt() ->> 'email', ''));
+$$;
+
+create or replace function public.owns_project(p uuid)
+returns boolean language sql stable security definer set search_path to '' as $$
+  select exists (
+    select 1 from public.projects pr
+    where pr.id = p and pr.owner_id = (select auth.uid())
+  );
+$$;
+
+create or replace function public.can_read_project(p uuid)
+returns boolean language sql stable security definer set search_path to '' as $$
+  select public.owns_project(p) or exists (
+    select 1 from public.project_members m
+    where m.project_id = p and m.email = public.current_email()
+  );
+$$;
+
+create or replace function public.can_write_project(p uuid)
+returns boolean language sql stable security definer set search_path to '' as $$
+  select public.owns_project(p) or exists (
+    select 1 from public.project_members m
+    where m.project_id = p and m.email = public.current_email() and m.role = 'editor'
+  );
+$$;
+
 /* --------------------------------------------------------------- RLS ----- */
 --
--- Tout est cloisonné par propriétaire de projet. La clé publishable utilisée par
--- le navigateur est publique par conception : c'est la RLS, et elle seule, qui
--- empêche un visiteur de lire les données d'un autre.
+-- Tout est cloisonné par projet. La clé publishable utilisée par le navigateur
+-- est publique par conception : c'est la RLS, et elle seule, qui empêche un
+-- visiteur de lire les données d'un autre.
 --
 -- `(select auth.uid())` plutôt que `auth.uid()` : la sous-requête est évaluée une
 -- fois par requête au lieu d'une fois par ligne.
@@ -210,10 +285,30 @@ create trigger optimizations_set_version
 alter table public.projects enable row level security;
 alter table public.categories enable row level security;
 alter table public.optimizations enable row level security;
+alter table public.project_members enable row level security;
+
+-- Seul le propriétaire gère la liste des invités. Un invité, même éditeur, ne
+-- peut ni s'adjoindre de complices ni se promouvoir.
+drop policy if exists project_members_select on public.project_members;
+create policy project_members_select on public.project_members
+  for select using (public.owns_project(project_id) or email = public.current_email());
+
+drop policy if exists project_members_insert on public.project_members;
+create policy project_members_insert on public.project_members
+  for insert with check (public.owns_project(project_id));
+
+drop policy if exists project_members_update on public.project_members;
+create policy project_members_update on public.project_members
+  for update using (public.owns_project(project_id))
+  with check (public.owns_project(project_id));
+
+drop policy if exists project_members_delete on public.project_members;
+create policy project_members_delete on public.project_members
+  for delete using (public.owns_project(project_id));
 
 drop policy if exists projects_select_own on public.projects;
 create policy projects_select_own on public.projects
-  for select using (owner_id = (select auth.uid()));
+  for select using (public.can_read_project(id));
 
 drop policy if exists projects_insert_own on public.projects;
 create policy projects_insert_own on public.projects
@@ -221,66 +316,51 @@ create policy projects_insert_own on public.projects
 
 drop policy if exists projects_update_own on public.projects;
 create policy projects_update_own on public.projects
-  for update using (owner_id = (select auth.uid()))
-  with check (owner_id = (select auth.uid()));
+  for update using (public.can_write_project(id))
+  with check (public.can_write_project(id));
 
+-- Supprimer le projet reste au propriétaire : ce n'est pas une modification
+-- parmi d'autres, ça emporte les catégories et tout l'historique.
 drop policy if exists projects_delete_own on public.projects;
 create policy projects_delete_own on public.projects
   for delete using (owner_id = (select auth.uid()));
 
 drop policy if exists categories_select_own on public.categories;
 create policy categories_select_own on public.categories
-  for select using (exists (
-    select 1 from public.projects p
-    where p.id = categories.project_id and p.owner_id = (select auth.uid())
-  ));
+  for select using (public.can_read_project(project_id));
 
 drop policy if exists categories_insert_own on public.categories;
 create policy categories_insert_own on public.categories
-  for insert with check (exists (
-    select 1 from public.projects p
-    where p.id = categories.project_id and p.owner_id = (select auth.uid())
-  ));
+  for insert with check (public.can_write_project(project_id));
 
 drop policy if exists categories_update_own on public.categories;
 create policy categories_update_own on public.categories
-  for update using (exists (
-    select 1 from public.projects p
-    where p.id = categories.project_id and p.owner_id = (select auth.uid())
-  )) with check (exists (
-    select 1 from public.projects p
-    where p.id = categories.project_id and p.owner_id = (select auth.uid())
-  ));
+  for update using (public.can_write_project(project_id))
+  with check (public.can_write_project(project_id));
 
 drop policy if exists categories_delete_own on public.categories;
 create policy categories_delete_own on public.categories
-  for delete using (exists (
-    select 1 from public.projects p
-    where p.id = categories.project_id and p.owner_id = (select auth.uid())
-  ));
+  for delete using (public.can_write_project(project_id));
 
 drop policy if exists optimizations_select_own on public.optimizations;
 create policy optimizations_select_own on public.optimizations
   for select using (exists (
     select 1 from public.categories c
-    join public.projects p on p.id = c.project_id
-    where c.id = optimizations.category_id and p.owner_id = (select auth.uid())
+    where c.id = optimizations.category_id and public.can_read_project(c.project_id)
   ));
 
 drop policy if exists optimizations_insert_own on public.optimizations;
 create policy optimizations_insert_own on public.optimizations
   for insert with check (exists (
     select 1 from public.categories c
-    join public.projects p on p.id = c.project_id
-    where c.id = optimizations.category_id and p.owner_id = (select auth.uid())
+    where c.id = optimizations.category_id and public.can_write_project(c.project_id)
   ));
 
 drop policy if exists optimizations_delete_own on public.optimizations;
 create policy optimizations_delete_own on public.optimizations
   for delete using (exists (
     select 1 from public.categories c
-    join public.projects p on p.id = c.project_id
-    where c.id = optimizations.category_id and p.owner_id = (select auth.uid())
+    where c.id = optimizations.category_id and public.can_write_project(c.project_id)
   ));
 
 -- Les optimisations ne se modifient pas : une nouvelle rédaction crée une

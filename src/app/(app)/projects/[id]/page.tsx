@@ -22,6 +22,7 @@ import {
   ImportCategoriesForm,
   ImportGscForm,
   ImportSemrushForm,
+  MembersForm,
 } from "./import-forms";
 
 type PageMetrics = { clicks: number; impressions: number; position: number; opportunity: number };
@@ -56,11 +57,27 @@ export default async function ProjectPage({
 
   const { data: project } = await supabase
     .from("projects")
-    .select("id, name, domain, notes, business_rules, market")
+    .select("id, name, domain, notes, business_rules, market, owner_id")
     .eq("id", id)
     .maybeSingle();
 
   if (!project) notFound();
+
+  // La gestion des accès n'est montrée qu'au propriétaire : un invité, même
+  // éditeur, n'a pas à décider qui d'autre entre. La RLS l'interdit déjà côté
+  // base ; ne pas afficher le bloc évite de lui proposer un bouton qui échoue.
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  const isOwner = user?.id === project.owner_id;
+
+  const { data: members } = isOwner
+    ? await supabase
+        .from("project_members")
+        .select("email, role")
+        .eq("project_id", id)
+        .order("email")
+    : { data: null };
 
   const { data: categories, error } = await supabase
     .from("categories")
@@ -172,6 +189,15 @@ export default async function ProjectPage({
         <EmptyState>
           Aucune catégorie suivie. Importe les URL ci-dessous ou dépose un export Search Console.
         </EmptyState>
+      )}
+
+      {isOwner && (
+        <Card
+          title="Accès au projet"
+          description="Qui peut ouvrir ce projet, en plus de toi. L'invitation porte sur une adresse e-mail : elle fonctionne même si la personne n'a jamais ouvert l'outil."
+        >
+          <MembersForm projectId={project.id} members={members ?? []} />
+        </Card>
       )}
 
       <Card

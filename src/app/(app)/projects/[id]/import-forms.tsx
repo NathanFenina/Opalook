@@ -8,10 +8,13 @@ import {
   importCategories,
   importGscData,
   importSemrushData,
+  inviteProjectMember,
+  removeProjectMember,
   saveBusinessRules,
   type BulkImportState,
   type CatalogueImportState,
   type GscImportState,
+  type MemberState,
   type RulesState,
   type SemrushImportState,
 } from "../../actions";
@@ -68,6 +71,87 @@ export function ImportCategoriesForm({ projectId }: { projectId: string }) {
       <Submit label="Importer les URL" pendingLabel="Import…" />
       <Feedback status={state.status} message={state.message} />
     </form>
+  );
+}
+
+const MEMBER_INITIAL: MemberState = { status: "idle", message: "" };
+
+export type Member = { email: string; role: string };
+
+/**
+ * Qui a accès au projet, en plus de son propriétaire.
+ *
+ * Deux niveaux seulement, parce qu'un troisième se paierait en explications
+ * sans rien régler. La distinction qui compte est celle qui engage de l'argent :
+ * un éditeur peut lancer les traitements, donc consommer les crédits Claude,
+ * DataForSEO et Firecrawl du compte.
+ */
+export function MembersForm({
+  projectId,
+  members,
+}: {
+  projectId: string;
+  members: Member[];
+}) {
+  const [state, formAction] = useActionState(inviteProjectMember, MEMBER_INITIAL);
+
+  return (
+    <div className="space-y-5">
+      {members.length > 0 ? (
+        <ul className="divide-y divide-border rounded-lg border">
+          {members.map((member) => (
+            <li
+              key={member.email}
+              className="flex flex-wrap items-center justify-between gap-3 px-3 py-2.5 text-sm"
+            >
+              <span className="min-w-0">
+                <span className="block truncate">{member.email}</span>
+                <span className="text-xs text-muted-foreground">
+                  {member.role === "editor"
+                    ? "Peut modifier et lancer les traitements"
+                    : "Lecture seule"}
+                </span>
+              </span>
+              <form action={removeProjectMember}>
+                <input type="hidden" name="project_id" value={projectId} />
+                <input type="hidden" name="email" value={member.email} />
+                <Button variant="outline" size="sm" type="submit">
+                  Retirer
+                </Button>
+              </form>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          Personne d&apos;autre n&apos;a accès à ce projet pour l&apos;instant.
+        </p>
+      )}
+
+      <form action={formAction} className="space-y-4">
+        <input type="hidden" name="project_id" value={projectId} />
+        <div className="grid gap-4 sm:grid-cols-[1fr_auto_auto] sm:items-end">
+          <Field
+            label="Adresse e-mail"
+            hint="Celle avec laquelle la personne se connectera. L'accès s'ouvre à sa première connexion, même si son compte n'existe pas encore."
+          >
+            <Input name="email" type="email" required placeholder="client@exemple.fr" />
+          </Field>
+          <Field label="Droits">
+            <select
+              name="role"
+              defaultValue="viewer"
+              className="border-input bg-transparent dark:bg-input/30 h-9 w-full rounded-md border px-3 py-1 text-sm shadow-xs outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            >
+              <option value="viewer">Lecture seule</option>
+              <option value="editor">Peut modifier et générer</option>
+            </select>
+          </Field>
+          <Submit label="Donner l'accès" pendingLabel="Envoi…" />
+        </div>
+        <Feedback status={state.status} message={state.message} />
+      </form>
+    </div>
   );
 }
 

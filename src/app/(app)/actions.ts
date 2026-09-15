@@ -538,6 +538,85 @@ export async function saveProjectBrief(formData: FormData) {
   revalidatePath(`/projects/${projectId}`);
 }
 
+/* ------------------------------------------------- partage d'un projet --- */
+
+export type MemberState = {
+  status: "idle" | "ok" | "error";
+  message: string;
+};
+
+/**
+ * Invite un compte sur un projet.
+ *
+ * L'invitation porte sur une adresse e-mail, pas sur un identifiant
+ * d'utilisateur : le client n'a le plus souvent jamais ouvert l'outil au moment
+ * où on lui ouvre l'accès, donc son compte n'existe pas encore. La RLS
+ * rapproche ensuite l'adresse du jeton de session, et l'accès s'active de
+ * lui-même à sa première connexion.
+ */
+export async function inviteProjectMember(
+  _prev: MemberState,
+  formData: FormData,
+): Promise<MemberState> {
+  const { supabase, user } = await requireUser();
+
+  const projectId = text(formData, "project_id");
+  const email = text(formData, "email").toLowerCase();
+  const role = text(formData, "role") === "editor" ? "editor" : "viewer";
+
+  if (!projectId) return { status: "error", message: "Projet manquant." };
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    return { status: "error", message: "Adresse e-mail invalide." };
+  }
+  if (email === user.email?.toLowerCase()) {
+    return {
+      status: "error",
+      message: "C'est ta propre adresse : tu es déjà propriétaire du projet.",
+    };
+  }
+
+  const { error } = await supabase
+    .from("project_members")
+    .upsert(
+      { project_id: projectId, email, role, invited_by: user.id },
+      { onConflict: "project_id,email" },
+    );
+
+  if (error) {
+    return { status: "error", message: `Invitation impossible : ${error.message}` };
+  }
+
+  revalidatePath(`/projects/${projectId}`);
+
+  return {
+    status: "ok",
+    message:
+      `${email} a maintenant accès à ce projet` +
+      (role === "editor"
+        ? " et peut lancer les traitements."
+        : " en lecture seule.") +
+      " L'accès s'ouvre à sa première connexion, avec cette adresse exactement.",
+  };
+}
+
+export async function removeProjectMember(formData: FormData) {
+  const { supabase } = await requireUser();
+
+  const projectId = text(formData, "project_id");
+  const email = text(formData, "email");
+  if (!projectId || !email) return;
+
+  const { error } = await supabase
+    .from("project_members")
+    .delete()
+    .eq("project_id", projectId)
+    .eq("email", email);
+
+  if (error) throw new Error(`Retrait impossible : ${error.message}`);
+
+  revalidatePath(`/projects/${projectId}`);
+}
+
 export type RulesState = {
   status: "idle" | "ok" | "error";
   message: string;
