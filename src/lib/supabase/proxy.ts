@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 
-import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from "@/lib/env";
+import { supabasePublishableKey, supabaseUrl } from "@/lib/env";
 import type { Database } from "@/lib/database.types";
 
 /** Routes accessibles sans être connecté. */
@@ -22,8 +22,8 @@ export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient<Database>(
-    SUPABASE_URL,
-    SUPABASE_PUBLISHABLE_KEY,
+    supabaseUrl(),
+    supabasePublishableKey(),
     {
       cookies: {
         getAll() {
