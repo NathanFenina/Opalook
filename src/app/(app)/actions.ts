@@ -21,6 +21,12 @@ import {
 } from "@/lib/catalogue";
 import { checkCompliance, type ComplianceReport, type Market } from "@/lib/compliance";
 import {
+  buildReport,
+  compare,
+  type Neighbour,
+  type SimilarityReport,
+} from "@/lib/similarity";
+import {
   renderCategoryHtml,
   renderCategoryText,
   renderShortDescriptionHtml,
@@ -183,6 +189,66 @@ async function loadProjectContext(
 }
 
 /**
+ * Confronte le texte qu'on vient d'écrire à ceux des autres catégories du site.
+ *
+ * Les garde-fous en amont — registre des mots-clés, angle réservé à la famille,
+ * ancrage dans la page — rendent la duplication improbable sans jamais la
+ * constater. Celui-ci ne fait que constater, et c'est le seul qui puisse dire
+ * si les autres ont tenu.
+ *
+ * La comparaison porte sur tout le projet, pas seulement sur la famille : une
+ * catégorie ambre et une catégorie opale sans lien d'arborescence puisent dans
+ * le même pool d'arguments autorisés et finissent par se ressembler. Le lien de
+ * parenté sert à hiérarchiser le verdict, pas à restreindre la recherche.
+ */
+async function compareWithSiblings(
+  supabase: SupabaseClient,
+  args: {
+    categoryId: string;
+    projectId: string;
+    categoryName: string;
+    externalId: number | null;
+    parentExternalId: number | null;
+    text: string;
+  },
+): Promise<SimilarityReport | null> {
+  const { data: rows } = await supabase
+    .from("categories")
+    .select(
+      "id, name, external_id, parent_external_id, optimizations(version, plain:payload->>plain)",
+    )
+    .eq("project_id", args.projectId)
+    .neq("id", args.categoryId);
+
+  if (!rows || rows.length === 0) return null;
+
+  const voisins: Neighbour[] = [];
+
+  for (const row of rows) {
+    const latest = [...(row.optimizations ?? [])].sort(
+      (a, b) => b.version - a.version,
+    )[0];
+    const other = latest?.plain;
+    if (!other) continue;
+
+    const lien =
+      args.externalId !== null && row.parent_external_id === args.externalId
+        ? "fille"
+        : row.external_id !== null && row.external_id === args.parentExternalId
+          ? "mère"
+          : args.parentExternalId !== null &&
+              row.parent_external_id === args.parentExternalId
+            ? "sœur"
+            : "projet";
+
+    const { score, phrases } = compare(args.text, args.categoryName, other, row.name);
+    voisins.push({ categoryId: row.id, name: row.name, lien, score, phrases });
+  }
+
+  return voisins.length > 0 ? buildReport(voisins) : null;
+}
+
+/**
  * Rend, note, contrôle et archive une version.
  *
  * Le contrôle des règles métier porte sur les deux livrables réunis : un
@@ -193,6 +259,9 @@ async function persistOptimization(
   args: {
     categoryId: string;
     categoryName: string;
+    projectId: string;
+    externalId: number | null;
+    parentExternalId: number | null;
     keyword: string;
     market: Market;
     content: CategoryContent;
@@ -200,7 +269,12 @@ async function persistOptimization(
     groundedInPage: boolean;
     steps?: PipelineStep[];
   },
-): Promise<{ score: number; compliance: ComplianceReport; error: string | null }> {
+): Promise<{
+  score: number;
+  compliance: ComplianceReport;
+  similarity: SimilarityReport | null;
+  error: string | null;
+}> {
   const { content } = args;
 
   const shortHtml = renderShortDescriptionHtml(content);
@@ -223,6 +297,15 @@ async function persistOptimization(
     categoryName: args.categoryName,
   });
 
+  const similarity = await compareWithSiblings(supabase, {
+    categoryId: args.categoryId,
+    projectId: args.projectId,
+    categoryName: args.categoryName,
+    externalId: args.externalId,
+    parentExternalId: args.parentExternalId,
+    text: `${shortText}\n\n${longText}`,
+  });
+
   const { error } = await supabase.from("optimizations").insert({
     category_id: args.categoryId,
     title: content.title,
@@ -239,6 +322,7 @@ async function persistOptimization(
       plain: longText,
       shortPlain: shortText,
       compliance,
+      similarity,
       ...(args.steps ? { steps: args.steps } : {}),
       // Une version rédigée sans relevé de page ne peut pas être jugée comme une
       // autre : les matières et références qu'elle cite ne sont pas vérifiées
@@ -248,7 +332,7 @@ async function persistOptimization(
     created_by: args.userId,
   });
 
-  return { score, compliance, error: error?.message ?? null };
+  return { score, compliance, similarity, error: error?.message ?? null };
 }
 
 /**
@@ -278,6 +362,21 @@ function rejectTakenKeywords(
     else kept.push(value);
   }
   return { kept, rejected };
+}
+
+/** Une phrase sur la ressemblance avec les autres textes du site. */
+function similaritySummary(report: SimilarityReport | null): string {
+  if (!report) return "";
+  const pire = report.voisins[0];
+  if (report.verdict === "distinct") {
+    return ` Ressemblance : ${report.pire}% au plus fort, le texte se tient à distance des autres.`;
+  }
+  return (
+    ` Ressemblance : ${report.pire}% avec « ${pire?.name ?? "?"} »` +
+    (report.verdict === "trop proche"
+      ? " — trop proche, à réécrire."
+      : " — à surveiller.")
+  );
 }
 
 /** Une phrase sur l'état du contrôle métier, à coller au message de retour. */
@@ -391,9 +490,17 @@ export async function runMoulinette(
     return { status: "error", message: (error as Error).message };
   }
 
-  const { score, compliance, error: insertError } = await persistOptimization(supabase, {
+  const {
+    score,
+    compliance,
+    similarity,
+    error: insertError,
+  } = await persistOptimization(supabase, {
     categoryId,
     categoryName: category.name,
+    projectId: category.project_id,
+    externalId: category.external_id,
+    parentExternalId: category.parent_external_id,
     keyword,
     market: (project?.market ?? null) as Market,
     content,
@@ -415,7 +522,8 @@ export async function runMoulinette(
     status: "ok",
     message:
       `Texte généré — angle retenu : « ${content.editorialAngle} ». Score ${score}/100.` +
-      complianceSummary(compliance),
+      complianceSummary(compliance) +
+      similaritySummary(similarity),
     score,
   };
 }
@@ -1549,9 +1657,17 @@ export async function runPipeline(
     detail: `Angle « ${content.editorialAngle} » · deux descriptions produites`,
   });
 
-  const { score, compliance, error: insertError } = await persistOptimization(supabase, {
+  const {
+    score,
+    compliance,
+    similarity,
+    error: insertError,
+  } = await persistOptimization(supabase, {
     categoryId,
     categoryName: category.name,
+    projectId: category.project_id,
+    externalId: category.external_id,
+    parentExternalId: category.parent_external_id,
     keyword,
     market,
     content,
@@ -1576,6 +1692,23 @@ export async function runPipeline(
           : `${compliance.passed} contrôles passés`,
   });
 
+  if (similarity) {
+    const pire = similarity.voisins[0];
+    steps.push({
+      label: "Ressemblance avec les autres textes",
+      status:
+        similarity.verdict === "trop proche"
+          ? "error"
+          : similarity.verdict === "surveiller"
+            ? "skipped"
+            : "ok",
+      detail:
+        similarity.verdict === "distinct"
+          ? `${similarity.pire}% au plus fort · texte distinct`
+          : `${similarity.pire}% avec « ${pire?.name ?? "?"} » (${pire?.lien ?? "projet"})`,
+    });
+  }
+
   await supabase.from("categories").update({ status: "optimized" }).eq("id", categoryId);
   revalidatePath(`/categories/${categoryId}`);
 
@@ -1586,7 +1719,9 @@ export async function runPipeline(
   return {
     status: "ok",
     message:
-      `Texte généré, score ${score}/100.${intentWarning}` + complianceSummary(compliance),
+      `Texte généré, score ${score}/100.${intentWarning}` +
+      complianceSummary(compliance) +
+      similaritySummary(similarity),
     steps,
   };
 }

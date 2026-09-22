@@ -5,6 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 import { auditSource, type Check } from "@/lib/moulinette";
 import { buildFamily } from "@/lib/catalogue";
 import type { ComplianceReport } from "@/lib/compliance";
+import type { SimilarityReport } from "@/lib/similarity";
 import {
   Card,
   ChecksList,
@@ -44,6 +45,68 @@ function checksFromPayload(payload: unknown): Check[] {
     if (Array.isArray(checks)) return checks as Check[];
   }
   return [];
+}
+
+/**
+ * Ressemblance du texte avec ceux des autres catégories.
+ *
+ * Le score seul ne sert à rien : « 34 % » ne dit pas quoi réécrire. Les
+ * passages communs, eux, se lisent et se corrigent. C'est pour ça qu'ils sont
+ * montrés en entier plutôt que résumés.
+ */
+function SimilarityPanel({ report }: { report: SimilarityReport }) {
+  const ton =
+    report.verdict === "trop proche"
+      ? "bg-destructive/10"
+      : report.verdict === "surveiller"
+        ? "bg-amber-500/10"
+        : "bg-emerald-500/10";
+
+  const titre =
+    report.verdict === "trop proche"
+      ? `Trop proche d'un autre texte du site — ${report.pire} % de passages communs`
+      : report.verdict === "surveiller"
+        ? `À surveiller — ${report.pire} % de passages communs`
+        : `Texte distinct — ${report.pire} % au plus fort`;
+
+  return (
+    <div className={`space-y-3 rounded-lg px-3 py-3 text-sm ${ton}`}>
+      <p className="font-medium">{titre}</p>
+
+      {report.verdict === "distinct" ? (
+        <p className="text-muted-foreground">
+          Comparé à toutes les autres catégories du projet, nom de catégorie
+          neutralisé. Rien qui ressemble à du contenu recyclé.
+        </p>
+      ) : (
+        <ul className="space-y-3">
+          {report.voisins
+            .filter((voisin) => voisin.score > 0)
+            .map((voisin) => (
+              <li key={voisin.categoryId} className="space-y-1">
+                <p>
+                  <Link
+                    href={`/categories/${voisin.categoryId}`}
+                    className="font-medium underline-offset-4 hover:underline"
+                  >
+                    {voisin.name}
+                  </Link>
+                  <span className="text-muted-foreground"> · {voisin.lien} · {voisin.score} %</span>
+                </p>
+                {voisin.phrases.map((phrase) => (
+                  <p
+                    key={phrase}
+                    className="text-muted-foreground/80 border-l-2 border-current/20 pl-2 text-xs italic"
+                  >
+                    {phrase}
+                  </p>
+                ))}
+              </li>
+            ))}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 function Output({ label, value }: { label: string; value: string | null }) {
@@ -175,6 +238,7 @@ export default async function CategoryPage({
   const payload = (latest?.payload ?? {}) as {
     groundedInPage?: boolean;
     compliance?: ComplianceReport;
+    similarity?: SimilarityReport | null;
     structured?: {
       differentiationFromFamily?: string;
       analysis?: {
@@ -189,6 +253,7 @@ export default async function CategoryPage({
   };
   const analysis = payload.structured?.analysis;
   const compliance = payload.compliance;
+  const similarity = payload.similarity;
 
   // La famille : c'est d'elle qu'il faut se démarquer en premier, puisqu'elle
   // parle du même univers. On la lit à l'affichage pour que l'écart entre le
@@ -563,6 +628,7 @@ export default async function CategoryPage({
               </div>
             )}
             {compliance && <CompliancePanel report={compliance} />}
+            {similarity && <SimilarityPanel report={similarity} />}
             <Output label="Title" value={latest.title} />
             <Output label="Meta description" value={latest.meta_description} />
             <Output label="H1 — à reporter sur le nom de la catégorie" value={latest.h1} />

@@ -13,6 +13,7 @@
 const SERP_ENDPOINT = "https://api.dataforseo.com/v3/serp/google/organic/live/advanced";
 const INSTANT_PAGES_ENDPOINT = "https://api.dataforseo.com/v3/on_page/instant_pages";
 const RAW_HTML_ENDPOINT = "https://api.dataforseo.com/v3/on_page/raw_html";
+const USER_DATA_ENDPOINT = "https://api.dataforseo.com/v3/appendix/user_data";
 
 /** Codes Google : 2250 = France, 'fr' = français. */
 export const FRANCE_LOCATION_CODE = 2250;
@@ -63,6 +64,90 @@ type DfsResponse = {
     result?: { items?: DfsItem[] }[];
   }[];
 };
+
+/* ----------------------------------------- vérification des identifiants -- */
+
+export type AccountCheck =
+  | { ok: true; login: string | null; solde: number | null; devise: string | null }
+  | { ok: false; raison: string };
+
+type UserDataResponse = {
+  status_code?: number;
+  status_message?: string;
+  tasks?: {
+    status_code?: number;
+    status_message?: string;
+    result?: {
+      login?: string;
+      money?: { balance?: number };
+      price?: unknown;
+    }[];
+  }[];
+};
+
+/**
+ * Interroge le compte DataForSEO pour savoir si les identifiants sont les bons.
+ *
+ * « Est-ce qu'on a le bon identifiant et le bon mot de passe ? » est une
+ * question à laquelle personne ne peut répondre en regardant des variables
+ * d'environnement : elles peuvent être présentes, bien orthographiées, et
+ * appartenir à un autre compte. Seul le fournisseur sait. Cet appel est gratuit
+ * chez eux, il renvoie le login et le solde — de quoi reconnaître le compte et
+ * voir s'il lui reste de quoi travailler.
+ *
+ * Renvoie un verdict plutôt que de lever : c'est un diagnostic, l'échec est une
+ * réponse valable.
+ */
+export async function checkAccount(): Promise<AccountCheck> {
+  let auth: string;
+  try {
+    auth = credentials();
+  } catch (error) {
+    return { ok: false, raison: (error as Error).message };
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(USER_DATA_ENDPOINT, {
+      method: "GET",
+      headers: { Authorization: `Basic ${auth}` },
+      cache: "no-store",
+    });
+  } catch (error) {
+    return { ok: false, raison: `DataForSEO injoignable : ${(error as Error).message}` };
+  }
+
+  if (response.status === 401) {
+    return {
+      ok: false,
+      raison:
+        "Identifiants refusés (401). Ce ne sont pas les bons, ou le jeton base64 " +
+        "n'encode pas « login:mot_de_passe ».",
+    };
+  }
+
+  let payload: UserDataResponse;
+  try {
+    payload = (await response.json()) as UserDataResponse;
+  } catch {
+    return { ok: false, raison: `DataForSEO a répondu ${response.status} sans JSON.` };
+  }
+
+  if (payload.status_code !== 20000) {
+    return {
+      ok: false,
+      raison: `DataForSEO : ${payload.status_code} ${payload.status_message ?? ""}`.trim(),
+    };
+  }
+
+  const result = payload.tasks?.[0]?.result?.[0];
+  return {
+    ok: true,
+    login: result?.login ?? null,
+    solde: result?.money?.balance ?? null,
+    devise: "USD",
+  };
+}
 
 /**
  * Jeton d'authentification DataForSEO.

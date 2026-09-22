@@ -533,6 +533,46 @@ export async function generateCategoryContent(
 }
 
 
+/* ------------------------------------------ vérification de la clé ------- */
+
+export type KeyCheck =
+  | { ok: true; nomUtilise: string; modeleDisponible: boolean }
+  | { ok: false; raison: string };
+
+/**
+ * Vérifie que la clé Anthropic est acceptée, sans rien facturer.
+ *
+ * Lister les modèles suffit : l'appel est authentifié, il ne consomme pas de
+ * jetons, et il distingue les trois pannes qu'on confond sinon — clé absente,
+ * clé refusée, clé valable mais sans accès au modèle qu'on utilise. Une clé
+ * créée au niveau d'une organisation plutôt que d'un espace de travail tombe
+ * ici, avant d'avoir lancé une rédaction pour rien.
+ */
+export async function checkAnthropicKey(): Promise<KeyCheck> {
+  const apiKey = anthropicApiKey();
+  if (!apiKey) return { ok: false, raison: MISSING_KEY_MESSAGE };
+
+  const nomUtilise =
+    API_KEY_NAMES.find((name) => process.env[name]?.trim()) ?? "inconnu";
+
+  try {
+    const models = await new Anthropic({ apiKey }).models.list({ limit: 100 });
+    return {
+      ok: true,
+      nomUtilise,
+      modeleDisponible: models.data.some((model) => model.id === GENERATION_MODEL),
+    };
+  } catch (error) {
+    if (error instanceof Anthropic.APIError) {
+      return {
+        ok: false,
+        raison: `Clé refusée (${error.status}) : ${error.message}`,
+      };
+    }
+    return { ok: false, raison: (error as Error).message };
+  }
+}
+
 /* ------------------------------------------------ suggestion de mots-clés */
 
 export const KeywordSuggestionSchema = z.object({

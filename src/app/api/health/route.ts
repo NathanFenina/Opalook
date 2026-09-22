@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 
 import { createClient } from "@/lib/supabase/server";
+import { checkAccount } from "@/lib/dataforseo";
+import { checkAnthropicKey } from "@/lib/generate";
 
 /**
  * État de la configuration serveur.
@@ -10,6 +12,11 @@ import { createClient } from "@/lib/supabase/server";
  * habituelles d'un « clé absente » : variable jamais ajoutée, ajoutée à un seul
  * environnement, ou ajoutée après le dernier déploiement — les variables
  * d'environnement Vercel ne sont lues qu'au build.
+ *
+ * Deux vérifications vont plus loin et interrogent réellement les
+ * fournisseurs. Une variable peut être présente, bien orthographiée, et
+ * appartenir à un autre compte : seul le fournisseur sait si la clé est la
+ * bonne. Les deux appels sont gratuits.
  */
 export const dynamic = "force-dynamic";
 
@@ -34,11 +41,20 @@ export async function GET() {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
   }
 
+  // Les deux vérifications sont indépendantes : on ne veut pas qu'un
+  // fournisseur lent retarde le diagnostic de l'autre.
+  const [anthropic, dataforseo] = await Promise.all([
+    checkAnthropicKey(),
+    checkAccount(),
+  ]);
+
   return NextResponse.json(
     {
       environnement: process.env.VERCEL_ENV ?? "local",
       deploiement: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? null,
       branche: process.env.VERCEL_GIT_COMMIT_REF ?? null,
+      anthropic,
+      dataforseo,
       variables: [
         describe("ANTHROPIC_API_KEY"),
         describe("DATAFORSEO_BASE64"),
