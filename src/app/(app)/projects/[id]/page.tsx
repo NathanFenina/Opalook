@@ -2,6 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/server";
+import { computeDepth, computePriority } from "@/lib/priority";
+import { DEFAULT_LOCALE, localeLabel, sortLocales } from "@/lib/locales";
 import { Card, EmptyState, Field } from "@/components/app-ui";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,6 +29,26 @@ import {
 
 type PageMetrics = { clicks: number; impressions: number; position: number; opportunity: number };
 
+const STATUS_LABELS: Record<string, string> = {
+  todo: "À faire",
+  in_progress: "En cours",
+  optimized: "Rédigé",
+  published: "Publié",
+};
+
+type LocaleRow = {
+  category_id: string;
+  locale: string;
+  name: string;
+  target_keyword: string | null;
+  keyword_volume: number | null;
+  keyword_difficulty: number | null;
+  target_length: number | null;
+  metadata_approved: boolean | null;
+  status: string;
+  published_at: string | null;
+};
+
 function Cell({
   value,
   tone,
@@ -49,10 +71,13 @@ function Cell({
 
 export default async function ProjectPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ lang?: string }>;
 }) {
   const { id } = await params;
+  const { lang } = await searchParams;
   const supabase = await createClient();
 
   const { data: project } = await supabase
@@ -82,28 +107,104 @@ export default async function ProjectPage({
   const { data: categories, error } = await supabase
     .from("categories")
     .select(
-      "id, name, url, status, target_keyword, gsc_data, keyword_volume, keyword_difficulty",
+      "id, name, url, status, target_keyword, gsc_data, keyword_volume, keyword_difficulty, external_id, parent_external_id, products_count",
     )
     .eq("project_id", id);
 
   if (error) throw new Error(`Lecture des catégories impossible : ${error.message}`);
 
-  // Trié par potentiel : on commence par ce qui rapporte, pas par ordre d'ajout.
+  /* --- les langues ------------------------------------------------------- */
+
+  const { data: localeData, error: localeError } = await supabase
+    .from("category_locales")
+    .select(
+      "category_id, locale, name, target_keyword, keyword_volume, keyword_difficulty, target_length, metadata_approved, status, published_at",
+    )
+    .eq("project_id", id);
+
+  const localeRows = (localeData ?? []) as unknown as LocaleRow[];
+  const availableLocales = sortLocales([
+    ...new Set(localeRows.map((row) => row.locale)),
+  ]);
+  const locale =
+    lang && availableLocales.includes(lang)
+      ? lang
+      : (availableLocales[0] ?? DEFAULT_LOCALE);
+
+  const byCategory = new Map(
+    localeRows.filter((row) => row.locale === locale).map((row) => [row.category_id, row]),
+  );
+
+  /* --- l'ordre de passage ------------------------------------------------ */
+  //
+  // Les catégories ne se traitent pas dans l'ordre du catalogue : une URL en
+  // onzième position sur une requête à volume vaut dix catégories de fond de
+  // rayon. La raison du rang est affichée avec lui, pour qu'il se discute.
+
+  const parents = new Map(
+    (categories ?? [])
+      .filter((category) => category.external_id !== null)
+      .map((category) => [category.external_id as number, category.parent_external_id]),
+  );
+
   const ranked = [...(categories ?? [])]
     .map((category) => {
       const gsc = (category.gsc_data ?? {}) as { pageMetrics?: PageMetrics };
-      return { ...category, metrics: gsc.pageMetrics };
+      const metrics = gsc.pageMetrics;
+      const localized = byCategory.get(category.id);
+
+      return {
+        ...category,
+        metrics,
+        localized,
+        priority: computePriority({
+          depth: computeDepth(category.external_id, category.parent_external_id, parents),
+          impressions: metrics?.impressions ?? null,
+          position: metrics?.position ?? null,
+          productsCount: category.products_count,
+        }),
+      };
     })
-    .sort((a, b) => (b.metrics?.opportunity ?? -1) - (a.metrics?.opportunity ?? -1));
+    .sort((a, b) => b.priority.score - a.priority.score);
 
   const totals = ranked.reduce(
     (acc, category) => ({
       impressions: acc.impressions + (category.metrics?.impressions ?? 0),
       clicks: acc.clicks + (category.metrics?.clicks ?? 0),
-      done: acc.done + (category.status === "published" ? 1 : 0),
+      done: acc.done + ((category.localized?.status ?? category.status) === "published" ? 1 : 0),
     }),
     { impressions: 0, clicks: 0, done: 0 },
   );
+
+  /* --- avancement par langue -------------------------------------------- */
+
+  const avancement = availableLocales.map((code) => {
+    const rows = localeRows.filter((row) => row.locale === code);
+    return {
+      locale: code,
+      total: rows.length,
+      avecMotCle: rows.filter((row) => row.target_keyword).length,
+      balisesValidees: rows.filter((row) => row.metadata_approved).length,
+      redigees: rows.filter((row) => row.status === "optimized" || row.status === "published")
+        .length,
+      publiees: rows.filter((row) => row.status === "published").length,
+    };
+  });
+
+  /* --- ce qui revient dans les refus ------------------------------------ */
+  //
+  // Une raison de refus corrigée dans les règles métier profite aux cent
+  // quatre-vingts catégories suivantes. Encore faut-il les lire ensemble.
+
+  const { data: refus } = await supabase
+    .from("optimizations")
+    .select(
+      "id, category_id, locale, version, rejection_reason, rejected_at, categories!inner(project_id, name)",
+    )
+    .eq("categories.project_id", id)
+    .not("rejection_reason", "is", null)
+    .order("rejected_at", { ascending: false })
+    .limit(20);
 
   return (
     <div className="space-y-8">
@@ -118,77 +219,230 @@ export default async function ProjectPage({
         <p className="text-sm text-muted-foreground">
           {project.domain ?? "domaine non renseigné"} · {ranked.length} catégories ·{" "}
           {totals.impressions.toLocaleString("fr-FR")} impressions ·{" "}
-          {totals.clicks.toLocaleString("fr-FR")} clics · {totals.done} terminée
+          {totals.clicks.toLocaleString("fr-FR")} clics · {totals.done} publiée
           {totals.done > 1 ? "s" : ""}
         </p>
       </div>
 
-      {ranked.length > 0 ? (
-        <div className="bg-card overflow-x-auto rounded-xl border">
-          <Table className="min-w-[54rem]">
-            <TableHeader>
-              <TableRow>
-                <TableHead>Catégorie</TableHead>
-                <TableHead>Mot-clé principal</TableHead>
-                <TableHead>Statut</TableHead>
-                <TableHead className="text-right">Impr.</TableHead>
-                <TableHead className="text-right">Clics</TableHead>
-                <TableHead className="text-right">Pos.</TableHead>
-                <TableHead className="text-right">Volume</TableHead>
-                <TableHead className="text-right">KD</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {ranked.map((category) => {
-                const quickWin =
-                  category.metrics &&
-                  category.metrics.position >= 8 &&
-                  category.metrics.position <= 20;
-                return (
-                  <TableRow key={category.id}>
-                    <TableCell className="max-w-xs">
-                      <Link
-                        href={`/categories/${category.id}`}
-                        className="block truncate font-medium underline-offset-4 hover:underline"
-                      >
-                        {category.name}
-                      </Link>
-                      <span className="text-muted-foreground/70 block truncate text-xs">
-                        {category.url.replace(/^https?:\/\/[^/]+/, "")}
-                      </span>
-                    </TableCell>
-                    <TableCell className="max-w-[14rem]">
-                      <span className="text-muted-foreground block truncate">
-                        {category.target_keyword ?? "—"}
-                      </span>
-                    </TableCell>
+      {localeError && (
+        <p className="rounded-lg bg-amber-500/10 px-3 py-3 text-sm text-amber-700 dark:text-amber-400">
+          <span className="font-medium">Le multilingue n&apos;est pas encore actif en base.</span>{" "}
+          Joue <code>supabase/migrations/2026-09-22_multilingue_et_suivi.sql</code> dans le SQL
+          Editor de Supabase, puis réimporte le catalogue pour créer les lignes des dix
+          langues. ({localeError.message})
+        </p>
+      )}
+
+      {avancement.length > 0 && (
+        <Card
+          title="Avancement par langue"
+          description="Le travail est propre à chaque langue : un mot-clé, des balises et un texte par marché. Une langue à zéro n'est pas en retard, elle n'est pas commencée."
+        >
+          <div className="overflow-x-auto">
+            <Table className="min-w-[40rem]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Langue</TableHead>
+                  <TableHead className="text-right">Catégories</TableHead>
+                  <TableHead className="text-right">Mot-clé</TableHead>
+                  <TableHead className="text-right">Balises validées</TableHead>
+                  <TableHead className="text-right">Rédigées</TableHead>
+                  <TableHead className="text-right">Publiées</TableHead>
+                  <TableHead className="text-right">Export</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {avancement.map((ligne) => (
+                  <TableRow key={ligne.locale}>
                     <TableCell>
-                      <StatusSelect
-                        categoryId={category.id}
-                        projectId={project.id}
-                        status={category.status}
-                      />
+                      <Link
+                        href={`/projects/${project.id}?lang=${ligne.locale}`}
+                        className={`underline-offset-4 hover:underline ${
+                          ligne.locale === locale ? "font-medium" : ""
+                        }`}
+                      >
+                        {localeLabel(ligne.locale)}
+                      </Link>
                     </TableCell>
-                    <Cell value={category.metrics?.impressions} />
-                    <Cell value={category.metrics?.clicks} />
+                    <Cell value={ligne.total} />
+                    <Cell value={ligne.avecMotCle} />
+                    <Cell value={ligne.balisesValidees} />
+                    <Cell value={ligne.redigees} />
                     <Cell
-                      value={category.metrics?.position.toFixed(1)}
+                      value={ligne.publiees}
                       tone={
-                        quickWin ? "font-medium text-amber-700 dark:text-amber-400" : undefined
+                        ligne.publiees > 0
+                          ? "font-medium text-emerald-700 dark:text-emerald-400"
+                          : undefined
                       }
                     />
-                    <Cell value={category.keyword_volume} />
-                    <Cell value={category.keyword_difficulty} />
+                    <TableCell className="text-right">
+                      <a
+                        href={`/api/projects/${project.id}/export?locale=${ligne.locale}`}
+                        className="text-xs underline-offset-4 hover:underline"
+                      >
+                        CSV
+                      </a>
+                    </TableCell>
                   </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            <a
+              href={`/api/projects/${project.id}/export?locale=all`}
+              className="text-sm underline-offset-4 hover:underline"
+            >
+              Exporter toutes les langues
+            </a>
+            <span className="text-muted-foreground/50">·</span>
+            <a
+              href={`/api/projects/${project.id}/export?locale=all&publishable=1`}
+              className="text-sm underline-offset-4 hover:underline"
+            >
+              Uniquement ce qui est publiable
+            </a>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground/80">
+            Point-virgule et UTF-8 avec BOM, pour qu&apos;Excel français l&apos;ouvre en
+            colonnes. Le HTML des deux descriptions est conservé tel quel : c&apos;est ce
+            que PrestaShop attend.
+          </p>
+        </Card>
+      )}
+
+      {ranked.length > 0 ? (
+        <div className="space-y-2">
+          <p className="text-xs text-muted-foreground">
+            Ordre de passage {availableLocales.length > 0 ? `· langue affichée : ${localeLabel(locale)}` : ""}
+            {" — "}gain rapide d&apos;abord, puis arborescence, puis volume de demande.
+          </p>
+          <div className="bg-card overflow-x-auto rounded-xl border">
+            <Table className="min-w-[62rem]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="text-right">Ordre</TableHead>
+                  <TableHead>Catégorie</TableHead>
+                  <TableHead>Mot-clé principal</TableHead>
+                  <TableHead>Statut</TableHead>
+                  <TableHead className="text-right">Impr.</TableHead>
+                  <TableHead className="text-right">Clics</TableHead>
+                  <TableHead className="text-right">Pos.</TableHead>
+                  <TableHead className="text-right">Volume</TableHead>
+                  <TableHead className="text-right">KD</TableHead>
+                  <TableHead className="text-right">Cible</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {ranked.map((category, index) => {
+                  const quickWin =
+                    category.metrics &&
+                    category.metrics.position >= 11 &&
+                    category.metrics.position <= 20;
+                  const localized = category.localized;
+                  return (
+                    <TableRow key={category.id}>
+                      <TableCell className="text-right align-top text-muted-foreground tabular-nums">
+                        {index + 1}
+                        <span className="block text-xs text-muted-foreground/60">
+                          {category.priority.score}
+                        </span>
+                      </TableCell>
+                      <TableCell className="max-w-xs">
+                        <Link
+                          href={`/categories/${category.id}?lang=${locale}`}
+                          className="block truncate font-medium underline-offset-4 hover:underline"
+                        >
+                          {localized?.name ?? category.name}
+                        </Link>
+                        <span className="text-muted-foreground/70 block truncate text-xs">
+                          {category.priority.raison}
+                        </span>
+                      </TableCell>
+                      <TableCell className="max-w-[14rem]">
+                        <span className="text-muted-foreground block truncate">
+                          {localized?.target_keyword ??
+                            (locale === DEFAULT_LOCALE ? category.target_keyword : null) ??
+                            "—"}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        {localized ? (
+                          <span className="text-sm text-muted-foreground">
+                            {STATUS_LABELS[localized.status] ?? localized.status}
+                            {localized.published_at && (
+                              <span className="block text-xs text-muted-foreground/70">
+                                {new Date(localized.published_at).toLocaleDateString("fr-FR")}
+                              </span>
+                            )}
+                          </span>
+                        ) : (
+                          <StatusSelect
+                            categoryId={category.id}
+                            projectId={project.id}
+                            status={category.status}
+                          />
+                        )}
+                      </TableCell>
+                      <Cell value={category.metrics?.impressions} />
+                      <Cell value={category.metrics?.clicks} />
+                      <Cell
+                        value={category.metrics?.position.toFixed(1)}
+                        tone={
+                          quickWin ? "font-medium text-amber-700 dark:text-amber-400" : undefined
+                        }
+                      />
+                      <Cell value={localized?.keyword_volume ?? category.keyword_volume} />
+                      <Cell
+                        value={localized?.keyword_difficulty ?? category.keyword_difficulty}
+                      />
+                      <Cell value={localized?.target_length} />
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
         </div>
       ) : (
         <EmptyState>
           Aucune catégorie suivie. Importe les URL ci-dessous ou dépose un export Search Console.
         </EmptyState>
+      )}
+
+      {refus && refus.length > 0 && (
+        <Card
+          title="Textes refusés — ce qui revient"
+          description="Chaque raison est repassée au modèle sur sa propre catégorie. Celles qui reviennent plusieurs fois n'ont rien à faire ici : elles doivent remonter dans les règles métier du site, où elles profiteront aux autres catégories."
+        >
+          <ul className="space-y-3 text-sm">
+            {refus.map((entry) => {
+              const categorie = entry.categories as unknown as { name: string } | null;
+              return (
+                <li key={entry.id} className="space-y-0.5">
+                  <p>
+                    <Link
+                      href={`/categories/${entry.category_id}?lang=${entry.locale}`}
+                      className="font-medium underline-offset-4 hover:underline"
+                    >
+                      {categorie?.name ?? "catégorie"}
+                    </Link>
+                    <span className="text-muted-foreground">
+                      {" "}
+                      · {localeLabel(entry.locale as string)} · v{entry.version}
+                      {entry.rejected_at
+                        ? ` · ${new Date(entry.rejected_at as string).toLocaleDateString("fr-FR")}`
+                        : ""}
+                    </span>
+                  </p>
+                  <p className="text-muted-foreground">{entry.rejection_reason}</p>
+                </li>
+              );
+            })}
+          </ul>
+        </Card>
       )}
 
       {isOwner && (
@@ -254,7 +508,7 @@ export default async function ProjectPage({
 
       <Card
         title="Importer le catalogue PrestaShop"
-        description="Liste faisant autorité des catégories, avec l'arborescence et les descriptions déjà en ligne. C'est la seule source qui donne la mère et les sœurs de chaque catégorie — celles dont il faut se démarquer."
+        description="Liste faisant autorité des catégories, avec l'arborescence et les descriptions déjà en ligne, dans toutes les langues du fichier. C'est la seule source qui donne la mère et les sœurs de chaque catégorie — celles dont il faut se démarquer."
       >
         <ImportCatalogueForm projectId={project.id} />
       </Card>

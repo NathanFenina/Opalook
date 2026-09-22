@@ -40,31 +40,85 @@ supabase/migrations/          # schéma versionné
 
 ## Modèle de données
 
-- **`projects`** — un site e-commerce client (nom, domaine, locale).
-- **`categories`** — une page catégorie à traiter : URL, mot-clé cible, statut,
-  et le contenu source relevé sur le site (`source_title`, `source_h1`, …).
-- **`optimizations`** — un passage de moulinette, versionné automatiquement par
-  trigger (`v1`, `v2`, …) : sortie générée, `score`, `engine` et l'audit complet
-  dans `payload.checks`.
+- **`projects`** — un site e-commerce client (nom, domaine, marché B2B/B2C,
+  règles métier éditables).
+- **`categories`** — ce qui ne dépend pas de la langue : identifiant PrestaShop,
+  arborescence (`parent_external_id`), nombre de produits, et le relevé de la
+  page (`source_title`, `source_data`, `gsc_data`, …).
+- **`category_locales`** — une ligne par langue publiée : nom, URL, segment
+  d'URL, mot-clé et son volume, balises, longueur cible, statut, **date de mise
+  en ligne**. Un mot-clé ne se traduit pas, et un texte non plus : tout ce qui
+  varie d'un marché à l'autre vit ici.
+- **`optimizations`** — un passage de rédaction, versionné par trigger et **par
+  langue** (`v1` allemand n'a rien à voir avec `v3` français) : sortie générée,
+  `score`, `engine`, l'audit dans `payload.checks`, et la raison du refus le cas
+  échéant.
+- **`project_members`** — les comptes invités sur un projet, par adresse e-mail
+  (l'invitation fonctionne avant que le compte existe).
+
+> ⚠ **Migration à jouer.** `supabase/migrations/2026-09-22_multilingue_et_suivi.sql`
+> crée `category_locales`, la langue sur `optimizations` et les colonnes de refus.
+> Tant qu'elle n'est pas jouée dans le SQL Editor, le multilingue, la longueur
+> cible, la date de publication et la boucle de refus sont inactifs — l'outil le
+> signale à l'écran et continue de fonctionner en français. Le fichier est
+> rejouable sans casse et ne supprime aucune colonne existante.
 
 RLS activée sur les trois tables : chaque utilisateur ne voit que ses propres
 projets. Pour basculer en mode « toute l'équipe voit tout », remplacer les
 clauses `owner_id = auth.uid()` par `auth.role() = 'authenticated'` dans une
 nouvelle migration.
 
-## La moulinette
+## Comment on travaille une catégorie
 
-Tout est dans `src/lib/moulinette.ts`, volontairement **pur** (aucune I/O) donc
-testable et remplaçable :
+Une catégorie n'est pas une page : c'est autant de pages qu'il y a de langues, et
+chacune se travaille **en deux phases**. La séparation n'est pas cosmétique — un
+mauvais cadrage se voit en dix secondes sur un title, et en dix minutes sur sept
+mille caractères.
 
-- `optimize(input)` — génère title / meta / H1 / texte + audit + score.
-- `auditSource(input)` — score la version d'origine, pour afficher le gain.
-- `audit(parts, keyword)` — le scoring seul, réutilisable.
+**Phase 1 — ce qui se décide avant d'écrire** (`src/app/(app)/locale-actions.ts`)
 
-La v0 (`engine: "rules-v0"`) est **déterministe, à base de règles** : longueurs
-cibles, présence et densité du mot-clé, structure Hn. Le champ `engine` en base
-est là pour qu'on puisse ajouter un moteur LLM à côté sans migration ni
-réécriture des appelants — l'historique restera lisible et comparable.
+1. **Mot-clé principal proposé à partir des données.** Trois sources se
+   rejoignent : les requêtes déjà remontées par Search Console sur cette URL, ce
+   que le modèle déduit du catalogue relevé, et le mot-clé actuel. Les volumes et
+   la difficulté sont ensuite mesurés pour de vrai sur le marché de la langue, en
+   un seul appel DataForSEO (la facturation est à la tâche, pas au mot-clé). Le
+   classement privilégie les positions 11 à 20 : la page y est déjà jugée
+   pertinente, un texte réécrit la fait souvent basculer en première page. Rien
+   n'est retenu sans clic.
+2. **Balises et segment d'URL.** Générés, corrigeables à la main, puis
+   *validés*. Une fois validées, la rédaction les recopie au lieu d'en inventer
+   d'autres — c'est ce qui permet de retoucher une URL sans regénérer le texte,
+   et de relancer un texte sans perdre un title approuvé.
+3. **Longueur à viser.** Médiane des textes réellement classés dans le top 10 sur
+   ce mot-clé, dans cette langue (`src/lib/target-length.ts`). On ne compte que
+   les paragraphes et les intertitres : une grille de cent produits pèse plus
+   lourd que n'importe quelle prose, et le total ne dirait plus rien.
+
+**Phase 2 — les deux descriptions**
+
+Écrites pour les balises validées, à la longueur mesurée, en reprenant les
+raisons des refus précédents. Puis contrôlées : règles métier
+(`src/lib/compliance.ts`, français uniquement — les tournures interdites sont
+françaises), ressemblance avec les autres textes du projet dans la même langue
+(`src/lib/similarity.ts`), et score sur le même barème que la version en ligne
+(`src/lib/moulinette.ts`).
+
+**Boucle de correction.** Un texte refusé garde son *pourquoi*. Cette raison
+repasse dans le prompt des rédactions suivantes de la même catégorie, et toutes
+les raisons se relisent en bloc sur la page projet : celles qui reviennent
+doivent remonter dans les règles métier du site, où elles profitent aux cent
+quatre-vingts autres catégories.
+
+**Ordre de passage.** Les catégories ne se traitent pas dans l'ordre du
+catalogue (`src/lib/priority.ts`) : gain rapide d'abord (position 11–20), puis
+l'arborescence (une mère fixe l'angle dont ses filles devront se démarquer, donc
+elle passe avant), puis le volume de demande pour départager.
+
+**Export.** `/api/projects/<id>/export?locale=<xx|all>` rend un CSV
+point-virgule + BOM UTF-8 — ce qu'Excel français ouvre en colonnes — avec les
+balises, le segment d'URL, les deux descriptions en HTML tel que PrestaShop
+l'attend, le statut et la date de mise en ligne. `&publishable=1` ne garde que
+ce qui a un texte non refusé.
 
 ## Démarrer en local
 

@@ -245,6 +245,130 @@ export function parseCatalogueCsv(
   return { rows, locales, locale: chosen, skipped };
 }
 
+/* ----------------------------------------------------- toutes les langues */
+
+export type LocaleRow = {
+  locale: string;
+  name: string;
+  url: string | null;
+  linkRewrite: string | null;
+  shortDescription: string | null;
+  longDescription: string | null;
+};
+
+export type CatalogueRowAllLocales = {
+  externalId: number;
+  parentExternalId: number | null;
+  productsCount: number | null;
+  /** Une entrée par langue réellement renseignée dans le fichier. */
+  locales: LocaleRow[];
+};
+
+export type CatalogueAllLocalesResult = {
+  rows: CatalogueRowAllLocales[];
+  locales: string[];
+  skipped: { line: number; reason: string }[];
+};
+
+/**
+ * Lit le catalogue dans toutes ses langues d'un coup.
+ *
+ * L'import langue par langue obligerait à redéposer le même fichier dix fois,
+ * et surtout à espérer que les dix passes tombent sur le même état du
+ * catalogue. Une seule lecture, dix jeux de lignes.
+ *
+ * Une langue sans URL pour une catégorie donnée est simplement absente du
+ * résultat : le site ne publie pas toutes ses catégories dans toutes ses
+ * langues, et inventer une ligne vide reviendrait à promettre une page qui
+ * n'existe pas.
+ */
+export function parseCatalogueAllLocales(content: string): CatalogueAllLocalesResult {
+  const firstLine = content.split(/\r?\n/, 1)[0] ?? "";
+  if (!firstLine.trim()) throw new CatalogueParseError("Fichier vide.");
+
+  const delimiter = detectDelimiter(firstLine);
+  const records = parseRecords(content, delimiter);
+  if (records.length < 2) {
+    throw new CatalogueParseError("Fichier sans ligne de données.");
+  }
+
+  const headers = records[0].map(normalizeHeader);
+  const locales = detectLocales(headers);
+  if (locales.length === 0) {
+    throw new CatalogueParseError(
+      "Aucune colonne « name_xx » trouvée. Attendu : un export PrestaShop avec " +
+        "id_category, id_parent, puis name_fr, url_fr, description_fr… par langue.",
+    );
+  }
+
+  const index = (name: string) => headers.indexOf(name);
+  const idColumn = index("id_category");
+  if (idColumn < 0) {
+    throw new CatalogueParseError("Colonne id_category manquante.");
+  }
+
+  const parentColumn = index("id_parent");
+  const countColumn = index("products_count");
+
+  const rows: CatalogueRowAllLocales[] = [];
+  const skipped: { line: number; reason: string }[] = [];
+  const seen = new Set<number>();
+
+  for (let i = 1; i < records.length; i++) {
+    const cells = records[i];
+    const cell = (position: number) =>
+      position >= 0 ? (cells[position] ?? "").trim() : "";
+
+    const externalId = toInt(cell(idColumn));
+    if (externalId === null) {
+      skipped.push({ line: i + 1, reason: "id_category illisible" });
+      continue;
+    }
+    if (seen.has(externalId)) {
+      skipped.push({ line: i + 1, reason: `id_category ${externalId} en double` });
+      continue;
+    }
+    seen.add(externalId);
+
+    const rawParent = parentColumn >= 0 ? toInt(cell(parentColumn)) : null;
+
+    const localeRows: LocaleRow[] = [];
+    for (const locale of locales) {
+      const name = cell(index(`name_${locale}`));
+      const url = cell(index(`url_${locale}`));
+      if (!name && !url) continue;
+
+      localeRows.push({
+        locale,
+        name: name || url,
+        url: /^https?:\/\//i.test(url) ? url : null,
+        linkRewrite: cell(index(`link_rewrite_${locale}`)) || null,
+        shortDescription: stripHtml(cell(index(`description_${locale}`))) || null,
+        longDescription:
+          stripHtml(cell(index(`additional_description_${locale}`))) || null,
+      });
+    }
+
+    if (localeRows.length === 0) {
+      skipped.push({ line: i + 1, reason: "aucune langue renseignée" });
+      continue;
+    }
+
+    rows.push({
+      externalId,
+      parentExternalId: rawParent === externalId ? null : rawParent,
+      productsCount: countColumn >= 0 ? toInt(cell(countColumn)) : null,
+      locales: localeRows,
+    });
+  }
+
+  if (rows.length === 0) {
+    throw new CatalogueParseError("Aucune catégorie exploitable.");
+  }
+
+  return { rows, locales, skipped };
+}
+
 /* --------------------------------------------------------------- famille -- */
 
 export type FamilyMember = {

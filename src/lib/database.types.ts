@@ -128,6 +128,129 @@ export type Database = {
           },
         ]
       }
+      // Ajoutée à la main : la migration `2026-09-22_multilingue_et_suivi.sql`
+      // n'a pas encore été jouée sur la base, donc la régénération automatique
+      // ne la voit pas. À remplacer par la sortie de `gen types` après coup.
+      category_locales: {
+        Row: {
+          brief: string | null
+          catalog_long_description: string | null
+          catalog_short_description: string | null
+          category_id: string
+          created_at: string
+          fan_queries: string[]
+          gsc_data: Json
+          gsc_fetched_at: string | null
+          h1: string | null
+          keyword_data_at: string | null
+          keyword_difficulty: number | null
+          keyword_intent: string | null
+          keyword_volume: number | null
+          link_rewrite: string | null
+          locale: string
+          meta_description: string | null
+          metadata_approved: boolean
+          metadata_engine: string | null
+          metadata_generated_at: string | null
+          name: string
+          project_id: string
+          published_at: string | null
+          secondary_keywords: string[]
+          serp_data: Json
+          serp_fetched_at: string | null
+          status: Database["public"]["Enums"]["category_status"]
+          target_keyword: string | null
+          target_length: number | null
+          target_length_source: Json
+          title: string | null
+          updated_at: string
+          url: string | null
+        }
+        Insert: {
+          brief?: string | null
+          catalog_long_description?: string | null
+          catalog_short_description?: string | null
+          category_id: string
+          created_at?: string
+          fan_queries?: string[]
+          gsc_data?: Json
+          gsc_fetched_at?: string | null
+          h1?: string | null
+          keyword_data_at?: string | null
+          keyword_difficulty?: number | null
+          keyword_intent?: string | null
+          keyword_volume?: number | null
+          link_rewrite?: string | null
+          locale: string
+          meta_description?: string | null
+          metadata_approved?: boolean
+          metadata_engine?: string | null
+          metadata_generated_at?: string | null
+          name: string
+          project_id: string
+          published_at?: string | null
+          secondary_keywords?: string[]
+          serp_data?: Json
+          serp_fetched_at?: string | null
+          status?: Database["public"]["Enums"]["category_status"]
+          target_keyword?: string | null
+          target_length?: number | null
+          target_length_source?: Json
+          title?: string | null
+          updated_at?: string
+          url?: string | null
+        }
+        Update: {
+          brief?: string | null
+          catalog_long_description?: string | null
+          catalog_short_description?: string | null
+          category_id?: string
+          created_at?: string
+          fan_queries?: string[]
+          gsc_data?: Json
+          gsc_fetched_at?: string | null
+          h1?: string | null
+          keyword_data_at?: string | null
+          keyword_difficulty?: number | null
+          keyword_intent?: string | null
+          keyword_volume?: number | null
+          link_rewrite?: string | null
+          locale?: string
+          meta_description?: string | null
+          metadata_approved?: boolean
+          metadata_engine?: string | null
+          metadata_generated_at?: string | null
+          name?: string
+          project_id?: string
+          published_at?: string | null
+          secondary_keywords?: string[]
+          serp_data?: Json
+          serp_fetched_at?: string | null
+          status?: Database["public"]["Enums"]["category_status"]
+          target_keyword?: string | null
+          target_length?: number | null
+          target_length_source?: Json
+          title?: string | null
+          updated_at?: string
+          url?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "category_locales_category_id_fkey"
+            columns: ["category_id"]
+            isOneToOne: false
+            referencedRelation: "categories"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "category_locales_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       optimizations: {
         Row: {
           category_id: string
@@ -138,8 +261,12 @@ export type Database = {
           engine: string | null
           h1: string | null
           id: string
+          locale: string
           meta_description: string | null
           payload: Json
+          rejected_at: string | null
+          rejected_by: string | null
+          rejection_reason: string | null
           score: number | null
           short_description: string | null
           title: string | null
@@ -154,8 +281,12 @@ export type Database = {
           engine?: string | null
           h1?: string | null
           id?: string
+          locale?: string
           meta_description?: string | null
           payload?: Json
+          rejected_at?: string | null
+          rejected_by?: string | null
+          rejection_reason?: string | null
           score?: number | null
           short_description?: string | null
           title?: string | null
@@ -170,8 +301,12 @@ export type Database = {
           engine?: string | null
           h1?: string | null
           id?: string
+          locale?: string
           meta_description?: string | null
           payload?: Json
+          rejected_at?: string | null
+          rejected_by?: string | null
+          rejection_reason?: string | null
           score?: number | null
           short_description?: string | null
           title?: string | null

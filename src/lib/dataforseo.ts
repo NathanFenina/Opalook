@@ -10,10 +10,16 @@
  * archive le résultat en base plutôt que de réinterroger.
  */
 
+import { DEFAULT_LOCALE, localeInfo } from "@/lib/locales";
+
 const SERP_ENDPOINT = "https://api.dataforseo.com/v3/serp/google/organic/live/advanced";
 const INSTANT_PAGES_ENDPOINT = "https://api.dataforseo.com/v3/on_page/instant_pages";
 const RAW_HTML_ENDPOINT = "https://api.dataforseo.com/v3/on_page/raw_html";
 const USER_DATA_ENDPOINT = "https://api.dataforseo.com/v3/appendix/user_data";
+const SEARCH_VOLUME_ENDPOINT =
+  "https://api.dataforseo.com/v3/keywords_data/google_ads/search_volume/live";
+const DIFFICULTY_ENDPOINT =
+  "https://api.dataforseo.com/v3/dataforseo_labs/google/bulk_keyword_difficulty/live";
 
 /** Codes Google : 2250 = France, 'fr' = français. */
 export const FRANCE_LOCATION_CODE = 2250;
@@ -182,14 +188,17 @@ function credentials(): string {
  * Interroge le SERP pour un mot-clé.
  *
  * @param ownDomain domaine du client, pour repérer sa propre position
+ * @param locale langue du mot-clé : elle détermine le pays ET la langue de mesure
  * @param depth nombre de résultats demandés — au-delà de 10, DataForSEO facture davantage
  */
 export async function fetchSerp(
   keyword: string,
   ownDomain: string | null,
+  locale: string = DEFAULT_LOCALE,
   depth = 10,
 ): Promise<SerpAnalysis> {
   const auth = credentials();
+  const marche = localeInfo(locale);
 
   let response: Response;
   try {
@@ -202,8 +211,8 @@ export async function fetchSerp(
       body: JSON.stringify([
         {
           keyword,
-          location_code: FRANCE_LOCATION_CODE,
-          language_code: FRENCH_LANGUAGE_CODE,
+          location_code: marche.locationCode,
+          language_code: marche.languageCode,
           depth,
           device: "desktop",
         },
@@ -270,6 +279,209 @@ export async function fetchSerp(
     results,
     ownRank: own?.rank ?? null,
   };
+}
+
+/* ---------------------------------------- volumes et difficulté ---------- */
+
+export type KeywordMetrics = {
+  keyword: string;
+  volume: number | null;
+  /** 0 à 100, d'après DataForSEO Labs. Mesure la difficulté organique. */
+  difficulty: number | null;
+  cpc: number | null;
+  /** Concurrence publicitaire, 0 à 100. Indice indirect d'intention marchande. */
+  competition: number | null;
+};
+
+type VolumeResponse = {
+  status_code?: number;
+  status_message?: string;
+  tasks?: {
+    status_code?: number;
+    status_message?: string;
+    result?: {
+      keyword?: string;
+      search_volume?: number | null;
+      cpc?: number | null;
+      competition_index?: number | null;
+    }[];
+  }[];
+};
+
+type DifficultyResponse = {
+  status_code?: number;
+  status_message?: string;
+  tasks?: {
+    status_code?: number;
+    status_message?: string;
+    result?: {
+      items?: { keyword?: string; keyword_difficulty?: number | null }[];
+    }[];
+  }[];
+};
+
+/** Normalise un mot-clé pour rapprocher la réponse de la demande. */
+function metricKey(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+/**
+ * Volume mensuel, coût par clic et concurrence publicitaire d'une liste de
+ * mots-clés, mesurés dans le pays de la langue demandée.
+ *
+ * Un seul appel pour toute la liste : DataForSEO facture à la tâche, pas au
+ * mot-clé, donc interroger vingt candidats coûte le même prix qu'un seul. C'est
+ * ce qui rend une vraie comparaison abordable — sans ça, on choisirait le
+ * mot-clé principal au jugé.
+ *
+ * Renvoie une map plutôt qu'une liste : l'API ne garantit ni l'ordre ni la
+ * présence de tous les mots-clés demandés, et un mot-clé sans donnée doit rester
+ * distinguable d'un mot-clé à volume nul.
+ */
+export async function fetchKeywordVolumes(
+  keywords: string[],
+  locale: string = DEFAULT_LOCALE,
+): Promise<Map<string, KeywordMetrics>> {
+  const out = new Map<string, KeywordMetrics>();
+
+  const unique = [...new Set(keywords.map((keyword) => keyword.trim()).filter(Boolean))];
+  if (unique.length === 0) return out;
+
+  const auth = credentials();
+  const marche = localeInfo(locale);
+
+  const payload = await post<VolumeResponse>(
+    SEARCH_VOLUME_ENDPOINT,
+    [
+      {
+        // L'API plafonne à 1 000 mots-clés par tâche ; on n'en propose jamais
+        // autant, mais le découpage manquant se paierait en erreur muette.
+        keywords: unique.slice(0, 1000),
+        location_code: marche.locationCode,
+        language_code: marche.languageCode,
+        search_partners: false,
+      },
+    ],
+    auth,
+  );
+
+  if (payload.status_code && payload.status_code !== 20000) {
+    throw new SerpError(
+      `DataForSEO : ${payload.status_message ?? `code ${payload.status_code}`}`,
+      "api",
+    );
+  }
+
+  const task = payload.tasks?.[0];
+  if (task?.status_code && task.status_code !== 20000) {
+    throw new SerpError(
+      `DataForSEO : ${task.status_message ?? `code ${task.status_code}`}`,
+      "api",
+    );
+  }
+
+  for (const item of task?.result ?? []) {
+    if (!item.keyword) continue;
+    out.set(metricKey(item.keyword), {
+      keyword: item.keyword,
+      volume: item.search_volume ?? null,
+      difficulty: null,
+      cpc: item.cpc ?? null,
+      competition: item.competition_index ?? null,
+    });
+  }
+
+  return out;
+}
+
+/**
+ * Difficulté organique d'une liste de mots-clés.
+ *
+ * Elle vient d'un autre produit que les volumes — DataForSEO Labs, pas Google
+ * Ads — donc d'un second appel. On le sépare pour que l'échec de l'un ne prive
+ * pas de l'autre : un volume sans difficulté reste exploitable, l'inverse aussi.
+ */
+export async function fetchKeywordDifficulty(
+  keywords: string[],
+  locale: string = DEFAULT_LOCALE,
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+
+  const unique = [...new Set(keywords.map((keyword) => keyword.trim()).filter(Boolean))];
+  if (unique.length === 0) return out;
+
+  const auth = credentials();
+  const marche = localeInfo(locale);
+
+  const payload = await post<DifficultyResponse>(
+    DIFFICULTY_ENDPOINT,
+    [
+      {
+        keywords: unique.slice(0, 1000),
+        location_code: marche.locationCode,
+        language_code: marche.languageCode,
+      },
+    ],
+    auth,
+  );
+
+  if (payload.status_code && payload.status_code !== 20000) {
+    throw new SerpError(
+      `DataForSEO : ${payload.status_message ?? `code ${payload.status_code}`}`,
+      "api",
+    );
+  }
+
+  for (const item of payload.tasks?.[0]?.result?.[0]?.items ?? []) {
+    if (!item.keyword || item.keyword_difficulty === null) continue;
+    if (typeof item.keyword_difficulty === "number") {
+      out.set(metricKey(item.keyword), item.keyword_difficulty);
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Volumes et difficulté réunis, chacun tolérant l'échec de l'autre.
+ *
+ * Le second verdict dit ce qui a manqué : « pas de données » et « l'appel a
+ * échoué » ne se soignent pas de la même façon, et les confondre ferait
+ * conclure à tort qu'un mot-clé n'a pas de demande.
+ */
+export async function fetchKeywordMetrics(
+  keywords: string[],
+  locale: string = DEFAULT_LOCALE,
+): Promise<{ metrics: Map<string, KeywordMetrics>; problemes: string[] }> {
+  const problemes: string[] = [];
+
+  const [volumes, difficulties] = await Promise.all([
+    fetchKeywordVolumes(keywords, locale).catch((error: Error) => {
+      problemes.push(`Volumes indisponibles : ${error.message}`);
+      return new Map<string, KeywordMetrics>();
+    }),
+    fetchKeywordDifficulty(keywords, locale).catch((error: Error) => {
+      problemes.push(`Difficulté indisponible : ${error.message}`);
+      return new Map<string, number>();
+    }),
+  ]);
+
+  const metrics = new Map(volumes);
+  for (const [key, difficulty] of difficulties) {
+    const existing = metrics.get(key);
+    if (existing) existing.difficulty = difficulty;
+    else {
+      metrics.set(key, {
+        keyword: key,
+        volume: null,
+        difficulty,
+        cpc: null,
+        competition: null,
+      });
+    }
+  }
+
+  return { metrics, problemes };
 }
 
 /* ------------------------------------------- récupération d'une page ----- */

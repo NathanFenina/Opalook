@@ -19,6 +19,7 @@ import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 
 import type { Family, FamilyMember } from "@/lib/catalogue";
+import { DEFAULT_LOCALE, localeInfo } from "@/lib/locales";
 
 export const GENERATION_MODEL = "claude-opus-5";
 
@@ -194,6 +195,28 @@ export type GenerationInput = {
   takenKeywords: string[];
   /** Angles déjà utilisés par d'autres catégories du projet. */
   takenAngles: string[];
+  /** Langue du livrable. Le texte, les balises et la FAQ sont écrits dedans. */
+  locale?: string;
+  /**
+   * Longueur visée pour la description longue, déduite du top 10 de la SERP.
+   * Absente, on retombe sur la fourchette générale du schéma.
+   */
+  targetLength?: number | null;
+  /**
+   * Balises validées à la main en phase 1. Fournies, elles sont reprises telles
+   * quelles : regénérer le texte ne doit pas défaire un title qu'on a approuvé.
+   */
+  approvedMetadata?: {
+    title: string | null;
+    metaDescription: string | null;
+    h1: string | null;
+  } | null;
+  /**
+   * Raisons pour lesquelles les versions précédentes ont été refusées.
+   * C'est la correction la plus rentable de tout le prompt : elle vient du
+   * relecteur et porte sur ce texte-là.
+   */
+  rejectionReasons?: string[];
 };
 
 export class GenerationError extends Error {
@@ -310,8 +333,16 @@ l'intention constatée au sérieux plutôt que de plaquer un discours commercial
 sur une requête qui n'en veut pas. Un mot-clé mal choisi ne se rattrape pas à la
 rédaction, et le taire ne rend service à personne.
 
+LANGUE DE RÉDACTION
+La langue du livrable est indiquée en tête du message. Tout ce que tu rends —
+title, meta description, H1, descriptions, FAQ, intertitres — est rédigé dans
+CETTE langue, dans la variante du pays indiqué, sans un mot des autres. Le
+mot-clé principal est déjà dans cette langue : il ne se traduit pas, il se
+reprend tel quel. Les champs d'analyse — analysis, differentiationFromFamily —
+restent en français : ils sont lus par l'équipe, pas publiés.
+
 STYLE
-Français naturel, phrases de longueur variable, pas de superlatifs creux ("le
+Langue naturelle, phrases de longueur variable, pas de superlatifs creux ("le
 meilleur", "incontournable", "révolutionnaire"), pas de formules d'IA ("plongez
 dans l'univers", "que vous soyez…"). Écris comme un professionnel du secteur qui
 s'adresse à un acheteur pressé.`;
@@ -371,7 +402,52 @@ function buildUserPrompt(input: GenerationInput): string {
       .map((facet) => `- ${facet.name} : ${facet.values.slice(0, 15).join(", ")}`)
       .join("\n") || "- (aucune facette relevée)";
 
-  return `# Site
+  const langue = localeInfo(input.locale ?? DEFAULT_LOCALE);
+
+  return `# Langue de rédaction — impérative
+${langue.label} (${langue.code}), marché ${langue.country}.
+Tout le livrable publié est écrit dans cette langue.
+
+${
+    input.targetLength
+      ? `# Longueur visée pour la description longue
+${input.targetLength} caractères, à ±15 %. Ce n'est pas un chiffre arbitraire :
+c'est la médiane des textes réellement classés dans le top 10 de Google sur ce
+mot-clé, dans cette langue. Écrire beaucoup plus court laisse le sujet à
+découvert ; beaucoup plus long ajoute du remplissage que personne ne lit.
+
+`
+      : ""
+  }${
+    input.approvedMetadata &&
+    (input.approvedMetadata.title ||
+      input.approvedMetadata.metaDescription ||
+      input.approvedMetadata.h1)
+      ? `# Balises déjà validées — à reprendre À L'IDENTIQUE
+Elles ont été relues et approuvées. Recopie-les mot pour mot dans ta réponse,
+sans les réécrire ni les « améliorer », et compose le texte pour qu'il les
+tienne.
+${input.approvedMetadata.title ? `- title : ${input.approvedMetadata.title}` : ""}
+${
+          input.approvedMetadata.metaDescription
+            ? `- meta description : ${input.approvedMetadata.metaDescription}`
+            : ""
+        }
+${input.approvedMetadata.h1 ? `- H1 : ${input.approvedMetadata.h1}` : ""}
+
+`
+      : ""
+  }${
+    input.rejectionReasons && input.rejectionReasons.length > 0
+      ? `# Pourquoi les versions précédentes ont été REFUSÉES
+Ce sont les remarques du relecteur sur cette catégorie précisément. Elles
+passent avant toute autre consigne de style : reproduire le même défaut est le
+seul échec certain de cette rédaction.
+${input.rejectionReasons.slice(0, 5).map((reason) => `- ${reason}`).join("\n")}
+
+`
+      : ""
+  }# Site
 Marque : ${input.brand}${input.domain ? ` (${input.domain})` : ""}
 Marché : ${input.market ? MARKET_LABELS[input.market] : "non précisé"}
 ${input.brief ? `Brief éditorial : ${input.brief}` : "Brief éditorial : non renseigné."}
@@ -570,6 +646,353 @@ export async function checkAnthropicKey(): Promise<KeyCheck> {
       };
     }
     return { ok: false, raison: (error as Error).message };
+  }
+}
+
+/* -------------------------------- proposition du mot-clé PRINCIPAL ------- */
+
+export const KeywordCandidatesSchema = z.object({
+  candidates: z
+    .array(
+      z.object({
+        keyword: z
+          .string()
+          .describe(
+            "Le mot-clé, formulé exactement comme un acheteur le taperait, " +
+              "dans la langue demandée, sans majuscule ni ponctuation",
+          ),
+        why: z.string().describe("Une phrase : sur quoi de la page il s'appuie"),
+        source: z
+          .string()
+          .describe(
+            "D'où il vient : « Search Console » si la page reçoit déjà des " +
+              "impressions dessus, « catalogue » s'il vient des produits ou des " +
+              "facettes, « déduit » sinon",
+          ),
+        reservation: z
+          .string()
+          .describe(
+            "Le risque de chevauchement avec une autre catégorie du site, en " +
+              "une phrase, ou « aucun »",
+          ),
+      }),
+    )
+    .describe(
+      "6 à 10 candidats au mot-clé PRINCIPAL, du plus évident au plus " +
+        "spéculatif. Ce sont des candidats, pas un classement final : les volumes " +
+        "seront mesurés ensuite",
+    ),
+});
+
+export type KeywordCandidates = z.infer<typeof KeywordCandidatesSchema>;
+
+export type CandidateInput = {
+  brand: string;
+  brief: string | null;
+  businessRules: string | null;
+  market: "b2b" | "b2c" | null;
+  locale: string;
+  categoryName: string;
+  categoryUrl: string;
+  family: Family | null;
+  products: string[];
+  facets: { name: string; values: string[] }[];
+  gscQueries: { query: string; impressions: number; position: number }[];
+  currentKeyword: string | null;
+  /** Mots-clés attribués aux autres pages : interdits, sans exception. */
+  takenKeywords: string[];
+};
+
+const CANDIDATE_SYSTEM = `Tu es consultant SEO e-commerce. Tu proposes des
+candidats au mot-clé PRINCIPAL d'une page catégorie — celui qui cadrera le
+title, le H1 et tout le texte.
+
+CE QUI COMPTE, DANS CET ORDRE
+1. La demande constatée. Si Search Console montre que la page reçoit déjà des
+   impressions sur une requête, cette requête est un candidat de premier rang :
+   c'est de la demande mesurée, pas supposée. Une requête en position 11 à 20 est
+   le meilleur candidat de tous — la page est déjà jugée pertinente, il ne manque
+   qu'un texte.
+2. Ce que la page contient vraiment. Un mot-clé qui promet une matière, une
+   pierre ou une déclinaison absente du catalogue fera fuir le visiteur et
+   n'améliorera rien.
+3. La place de la catégorie dans l'arborescence. Une catégorie mère cible le
+   terme générique, une fille cible sa spécialité. Une fille qui viserait le
+   terme de sa mère se placerait contre elle.
+
+INTERDITS
+- Aucun mot-clé déjà attribué à une autre page du site. Pas même une variante
+  proche : deux pages sur la même requête se cannibalisent, et c'est l'erreur la
+  plus coûteuse de tout le travail.
+- Aucun mot-clé dans une autre langue que celle demandée. Un mot-clé ne se
+  traduit pas : « bijou ambre » et son équivalent allemand sont deux cibles
+  différentes, avec des volumes différents.
+- Aucune requête informationnelle (« qu'est-ce que », « comment fabriquer ») :
+  la page est marchande.
+
+Tu proposes, tu ne tranches pas. Les volumes de recherche sont mesurés après
+toi, et c'est eux qui départageront. Propose donc large : un candidat évident
+mais saturé et un candidat plus précis mais accessible ont tous les deux leur
+place dans ta liste.`;
+
+/**
+ * Propose des candidats au mot-clé principal.
+ *
+ * Le modèle ne connaît pas les volumes de recherche, et il ne doit pas les
+ * inventer : son travail ici est de produire des formulations plausibles et
+ * ancrées dans la page. La mesure vient ensuite, et c'est elle qui classe.
+ */
+export async function proposeKeywordCandidates(
+  input: CandidateInput,
+): Promise<KeywordCandidates> {
+  const apiKey = anthropicApiKey();
+  if (!apiKey) throw new GenerationError(MISSING_KEY_MESSAGE, "no_key");
+
+  const langue = localeInfo(input.locale);
+  const client = new Anthropic({ apiKey });
+
+  const prompt = `# Langue des mots-clés — impérative
+${langue.label} (${langue.code}), marché ${langue.country}. Tous les candidats
+sont formulés dans cette langue, telle que la tape un acheteur de ce pays.
+
+# Site
+${input.brand}
+Marché : ${input.market ? MARKET_LABELS[input.market] : "non précisé"}
+${input.brief ? `Brief : ${input.brief}` : ""}
+
+# Règles métier du site
+${input.businessRules?.trim()?.slice(0, 4000) || "(aucune)"}
+
+# Catégorie
+Nom : ${input.categoryName}
+URL : ${input.categoryUrl}
+Mot-clé actuellement retenu : ${input.currentKeyword || "(aucun)"}
+
+# Place dans l'arborescence
+${familyBlock(input.family)}
+
+# Requêtes déjà remontées par Search Console sur cette URL
+${
+    input.gscQueries.length > 0
+      ? input.gscQueries
+          .slice(0, 40)
+          .map(
+            (row) =>
+              `- ${row.query} — ${row.impressions} impressions, position ${row.position.toFixed(1)}` +
+              (row.position >= 11 && row.position <= 20 ? " ← gain rapide" : ""),
+          )
+          .join("\n")
+      : "- (aucune donnée importée : tu proposes donc sans demande constatée, dis-le dans `source`)"
+  }
+
+# Produits réellement présents
+${bulletList(input.products, 40)}
+
+# Facettes de filtres disponibles
+${
+    input.facets
+      .map((facet) => `- ${facet.name} : ${facet.values.slice(0, 15).join(", ")}`)
+      .join("\n") || "- (aucune facette relevée)"
+  }
+
+# Déjà attribués à d'autres pages du site — interdits
+${input.takenKeywords.slice(0, 120).join(" | ") || "(aucun)"}
+
+Propose les candidats au mot-clé principal de cette catégorie.`;
+
+  try {
+    const response = await client.messages.parse({
+      model: GENERATION_MODEL,
+      max_tokens: 8000,
+      thinking: { type: "adaptive" },
+      output_config: {
+        effort: "medium",
+        format: zodOutputFormat(KeywordCandidatesSchema),
+      },
+      system: CANDIDATE_SYSTEM,
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    if (!response.parsed_output) {
+      throw new GenerationError("Aucun candidat exploitable renvoyé.", "empty");
+    }
+    return response.parsed_output;
+  } catch (error) {
+    if (error instanceof GenerationError) throw error;
+    if (error instanceof Anthropic.APIError) {
+      throw new GenerationError(
+        `Erreur API Anthropic (${error.status}) : ${error.message}`,
+        "api",
+      );
+    }
+    throw new GenerationError((error as Error).message, "api");
+  }
+}
+
+/* ------------------------------- phase 1 : balises et segment d'URL ------ */
+
+export const MetadataSchema = z.object({
+  title: z.string().describe("Balise title, 50 à 60 caractères, mot-clé en tête"),
+  metaDescription: z
+    .string()
+    .describe("Meta description, 140 à 158 caractères espaces compris, jamais plus de 158"),
+  h1: z
+    .string()
+    .describe("H1, 40 à 65 caractères espaces compris, contient le mot-clé principal"),
+  linkRewrite: z
+    .string()
+    .describe(
+      "Segment d'URL PrestaShop : minuscules, sans accent, mots séparés par des " +
+        "tirets, 3 à 5 mots, contient le mot-clé principal. Pas de mot vide " +
+        "inutile, pas de chiffre, pas de barre oblique",
+    ),
+  rationale: z
+    .string()
+    .describe("En français, deux phrases : ce qui a décidé la formulation retenue"),
+});
+
+export type Metadata = z.infer<typeof MetadataSchema>;
+
+export type MetadataInput = {
+  brand: string;
+  domain: string | null;
+  brief: string | null;
+  businessRules: string | null;
+  market: "b2b" | "b2c" | null;
+  locale: string;
+  categoryName: string;
+  categoryUrl: string;
+  currentLinkRewrite: string | null;
+  keyword: string;
+  family: Family | null;
+  serp: { rank: number; title: string; description: string; domain: string }[];
+  gscQueries: { query: string; impressions: number; position: number }[];
+  currentTitle: string | null;
+  currentMetaDescription: string | null;
+  currentH1: string | null;
+  /** Balises des autres pages : c'est là que la duplication se voit le plus vite. */
+  takenTitles: string[];
+};
+
+const METADATA_SYSTEM = `Tu écris les balises d'une page catégorie e-commerce et
+son segment d'URL. Rien d'autre : pas de description, pas de texte de page.
+
+POURQUOI CETTE ÉTAPE EST SÉPARÉE
+Les balises et l'URL se décident avant le texte, et se relisent en quelques
+secondes sur cent quatre-vingts catégories. Les valider d'abord évite de
+découvrir un mauvais cadrage après avoir fait rédiger sept mille caractères
+dessus. Une fois approuvées, elles ne bougent plus : le texte est écrit pour
+elles.
+
+RÈGLES
+- Le mot-clé principal ouvre le title, et figure dans le H1.
+- Le title est unique sur tout le site. On te donne ceux des autres catégories :
+  ni le même, ni une simple permutation.
+- La meta description ne dépasse jamais 158 caractères. Elle donne une raison de
+  cliquer — un bénéfice concret, pas un slogan.
+- Le H1 se lit comme un nom de rayon, pas comme un titre d'article.
+- Le segment d'URL est court et stable : il décrit la catégorie, pas une
+  promotion ni une saison. Un segment qu'il faudra changer dans six mois est un
+  mauvais segment, parce que le changer coûte une redirection.
+- Aucun superlatif creux, aucune promesse chiffrée, aucune formule d'IA.
+
+Si le classement organique t'est fourni, lis les titles des premiers comme la
+formulation que Google juge pertinente — puis démarque-toi d'eux.`;
+
+/**
+ * Première phase : les balises et le segment d'URL, sans le texte.
+ *
+ * C'est ce que le client a demandé — travailler les mots-clés, les balises et
+ * les liens d'abord, les descriptions ensuite. La raison est économique autant
+ * que méthodologique : cette étape coûte une fraction de la rédaction complète,
+ * et elle peut donc être relancée autant de fois qu'il faut pour obtenir un
+ * cadrage juste avant d'engager le texte.
+ */
+export async function generateMetadata(input: MetadataInput): Promise<Metadata> {
+  const apiKey = anthropicApiKey();
+  if (!apiKey) throw new GenerationError(MISSING_KEY_MESSAGE, "no_key");
+
+  const langue = localeInfo(input.locale);
+  const client = new Anthropic({ apiKey });
+
+  const prompt = `# Langue de rédaction — impérative
+${langue.label} (${langue.code}), marché ${langue.country}. Le title, la meta
+description, le H1 et le segment d'URL sont dans cette langue. Le champ
+\`rationale\` reste en français.
+
+# Site
+Marque : ${input.brand}${input.domain ? ` (${input.domain})` : ""}
+Marché : ${input.market ? MARKET_LABELS[input.market] : "non précisé"}
+${input.brief ? `Brief : ${input.brief}` : ""}
+
+# Règles métier du site — autorité supérieure
+${input.businessRules?.trim()?.slice(0, 6000) || "(aucune)"}
+
+# Catégorie
+Nom : ${input.categoryName}
+URL actuelle : ${input.categoryUrl}
+Segment d'URL actuel : ${input.currentLinkRewrite || "(inconnu)"}
+Mot-clé principal : ${input.keyword}
+
+# Place dans l'arborescence
+${familyBlock(input.family)}
+
+# Balises actuellement en ligne
+title : ${input.currentTitle || "(vide)"}
+meta description : ${input.currentMetaDescription || "(vide)"}
+H1 : ${input.currentH1 || "(vide)"}
+
+# Requêtes déjà positionnées sur cette URL
+${
+    input.gscQueries.length > 0
+      ? input.gscQueries
+          .slice(0, 15)
+          .map((row) => `- ${row.query} (pos. ${row.position.toFixed(1)})`)
+          .join("\n")
+      : "- (aucune donnée)"
+  }
+
+# Classement organique sur « ${input.keyword} »
+${
+    input.serp.length > 0
+      ? input.serp
+          .slice(0, 5)
+          .map((row) => `${row.rank}. [${row.domain}] ${row.title}`)
+          .join("\n")
+      : "(non relevé)"
+  }
+
+# Titles déjà utilisés sur le site — à ne pas répéter
+${input.takenTitles.slice(0, 60).map((title) => `- ${title}`).join("\n") || "- (aucun)"}
+
+Écris les balises et le segment d'URL de cette catégorie.`;
+
+  try {
+    const response = await client.messages.parse({
+      model: GENERATION_MODEL,
+      max_tokens: 4000,
+      thinking: { type: "adaptive" },
+      output_config: {
+        effort: "medium",
+        format: zodOutputFormat(MetadataSchema),
+      },
+      system: METADATA_SYSTEM,
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    if (!response.parsed_output) {
+      throw new GenerationError("Le modèle n'a pas renvoyé de balises.", "empty");
+    }
+    return response.parsed_output;
+  } catch (error) {
+    if (error instanceof GenerationError) throw error;
+    if (error instanceof Anthropic.APIError) {
+      throw new GenerationError(
+        `Erreur API Anthropic (${error.status}) : ${error.message}`,
+        "api",
+      );
+    }
+    throw new GenerationError((error as Error).message, "api");
   }
 }
 

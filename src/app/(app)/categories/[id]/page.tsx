@@ -6,6 +6,9 @@ import { auditSource, type Check } from "@/lib/moulinette";
 import { buildFamily } from "@/lib/catalogue";
 import type { ComplianceReport } from "@/lib/compliance";
 import type { SimilarityReport } from "@/lib/similarity";
+import { DEFAULT_LOCALE, localeInfo, localeLabel, sortLocales } from "@/lib/locales";
+import { linkRewriteFromUrl } from "@/lib/slug";
+import type { TargetLength } from "@/lib/target-length";
 import {
   Card,
   ChecksList,
@@ -22,6 +25,8 @@ import { PipelineForm } from "./pipeline-form";
 import { CopyButton } from "./copy-button";
 import { KeywordsForm, type GscQuery } from "./keywords-form";
 import { SerpForm } from "./serp-form";
+import { KeywordProposal, MetadataForm, TargetLengthForm } from "./phase1-forms";
+import { DescriptionForm, LocaleStatusSelect, RejectForm } from "./phase2-forms";
 import { Button } from "@/components/ui/button";
 
 // La rédaction par Claude prend nettement plus que la durée par défaut d'une
@@ -33,6 +38,31 @@ type SourceData = {
   productCount?: number | null;
   facets?: { name: string; values: string[] }[];
   breadcrumb?: string[];
+};
+
+/** Ce que porte une catégorie dans une langue donnée. */
+type LocaleRow = {
+  locale: string;
+  name: string;
+  url: string | null;
+  link_rewrite: string | null;
+  target_keyword: string | null;
+  keyword_volume: number | null;
+  keyword_difficulty: number | null;
+  secondary_keywords: string[] | null;
+  fan_queries: string[] | null;
+  brief: string | null;
+  catalog_short_description: string | null;
+  catalog_long_description: string | null;
+  title: string | null;
+  meta_description: string | null;
+  h1: string | null;
+  metadata_approved: boolean | null;
+  metadata_generated_at: string | null;
+  target_length: number | null;
+  target_length_source: unknown;
+  status: string;
+  published_at: string | null;
 };
 
 function sourceData(payload: unknown): SourceData {
@@ -75,8 +105,8 @@ function SimilarityPanel({ report }: { report: SimilarityReport }) {
 
       {report.verdict === "distinct" ? (
         <p className="text-muted-foreground">
-          Comparé à toutes les autres catégories du projet, nom de catégorie
-          neutralisé. Rien qui ressemble à du contenu recyclé.
+          Comparé à toutes les autres catégories du projet dans cette langue, nom de
+          catégorie neutralisé. Rien qui ressemble à du contenu recyclé.
         </p>
       ) : (
         <ul className="space-y-3">
@@ -197,12 +227,67 @@ function CompliancePanel({ report }: { report: ComplianceReport }) {
   );
 }
 
+/**
+ * Les langues de la catégorie, et où en est chacune.
+ *
+ * L'état d'avancement est montré sur l'onglet lui-même. Sur dix langues, savoir
+ * laquelle attend quoi sans avoir à cliquer dix fois est la moitié du confort.
+ */
+function LocaleTabs({
+  categoryId,
+  locales,
+  current,
+}: {
+  categoryId: string;
+  locales: LocaleRow[];
+  current: string;
+}) {
+  const STATUS_MARK: Record<string, string> = {
+    todo: "○",
+    in_progress: "◐",
+    optimized: "●",
+    published: "✓",
+  };
+
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {locales.map((row) => {
+        const actif = row.locale === current;
+        return (
+          <Link
+            key={row.locale}
+            href={`/categories/${categoryId}?lang=${row.locale}`}
+            className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${
+              actif
+                ? "border-foreground/30 bg-muted font-medium"
+                : "border-transparent text-muted-foreground hover:bg-muted/60"
+            }`}
+          >
+            <span aria-hidden className="mr-1.5">
+              {STATUS_MARK[row.status] ?? "○"}
+            </span>
+            {localeLabel(row.locale)}
+            {!row.target_keyword && (
+              <span className="ml-1.5 text-amber-700 dark:text-amber-400" title="pas de mot-clé">
+                !
+              </span>
+            )}
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
+
 export default async function CategoryPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ lang?: string }>;
 }) {
   const { id } = await params;
+  const { lang } = await searchParams;
   const supabase = await createClient();
 
   const { data: category } = await supabase
@@ -214,6 +299,34 @@ export default async function CategoryPage({
   if (!category) notFound();
 
   const project = category.projects as { id: string; name: string } | null;
+
+  /* --- les langues ------------------------------------------------------- */
+  //
+  // La table des langues peut ne pas encore exister : la migration se joue à la
+  // main dans Supabase. Son absence ne doit pas rendre la page inaccessible, elle
+  // doit se voir et se lire. On dégrade donc sur le français seul.
+
+  const { data: localeData, error: localeError } = await supabase
+    .from("category_locales")
+    .select("*")
+    .eq("category_id", id);
+
+  const localeRows = (localeData ?? []) as unknown as LocaleRow[];
+  const ordered = sortLocales(localeRows.map((row) => row.locale)).map(
+    (code) => localeRows.find((row) => row.locale === code)!,
+  );
+
+  const locale =
+    lang && ordered.some((row) => row.locale === lang) ? lang : DEFAULT_LOCALE;
+  const localeRow = ordered.find((row) => row.locale === locale) ?? null;
+  const marche = localeInfo(locale);
+
+  // Le mot-clé et les mots-clés secondaires de la langue courante, avec repli sur
+  // les colonnes françaises de `categories` — c'est là qu'ils vivaient avant.
+  const keyword =
+    localeRow?.target_keyword ??
+    (locale === DEFAULT_LOCALE ? category.target_keyword : null);
+
   const source = sourceData(category.source_data);
   const gsc = (category.gsc_data ?? {}) as {
     queries?: GscQuery[];
@@ -225,20 +338,35 @@ export default async function CategoryPage({
     ownRank?: number | null;
   };
 
-  const { data: optimizations, error } = await supabase
+  /* --- les versions de CETTE langue -------------------------------------- */
+
+  const { data: localeOptimizations, error: optimizationsError } = await supabase
     .from("optimizations")
     .select("*")
     .eq("category_id", id)
+    .eq("locale", locale)
     .order("version", { ascending: false });
 
-  if (error) throw new Error(`Lecture des optimisations impossible : ${error.message}`);
+  // Avant la migration, `optimizations.locale` n'existe pas : on relit sans le
+  // filtre plutôt que de faire tomber la page sur une colonne manquante.
+  const { data: fallbackOptimizations } = optimizationsError
+    ? await supabase
+        .from("optimizations")
+        .select("*")
+        .eq("category_id", id)
+        .order("version", { ascending: false })
+    : { data: null };
 
-  const latest = optimizations?.[0];
+  const optimizations = localeOptimizations ?? fallbackOptimizations ?? [];
+  const latest = optimizations[0];
 
   const payload = (latest?.payload ?? {}) as {
     groundedInPage?: boolean;
     compliance?: ComplianceReport;
     similarity?: SimilarityReport | null;
+    complianceChecked?: boolean;
+    longueur?: number;
+    targetLength?: number | null;
     structured?: {
       differentiationFromFamily?: string;
       analysis?: {
@@ -276,13 +404,17 @@ export default async function CategoryPage({
     ? auditSource({
         name: category.name,
         url: category.url,
-        targetKeyword: category.target_keyword,
+        targetKeyword: keyword,
         sourceTitle: category.source_title,
         sourceMetaDescription: category.source_meta_description,
         sourceH1: category.source_h1,
         sourceContent: category.source_content,
       })
     : null;
+
+  const mesure = (localeRow?.target_length_source ?? null) as TargetLength | null;
+  const displayName = localeRow?.name || category.name;
+  const displayUrl = localeRow?.url ?? category.url;
 
   return (
     <div className="space-y-8">
@@ -296,24 +428,50 @@ export default async function CategoryPage({
           </Link>
         )}
         <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-xl font-semibold tracking-tight">{category.name}</h1>
-          {project && (
-            <StatusSelect
+          <h1 className="text-xl font-semibold tracking-tight">{displayName}</h1>
+          {project && localeRow ? (
+            <LocaleStatusSelect
               categoryId={category.id}
               projectId={project.id}
-              status={category.status}
+              locale={locale}
+              status={localeRow.status}
+              publishedAt={localeRow.published_at}
             />
+          ) : (
+            project && (
+              <StatusSelect
+                categoryId={category.id}
+                projectId={project.id}
+                status={category.status}
+              />
+            )
           )}
         </div>
         <a
-          href={category.url}
+          href={displayUrl}
           target="_blank"
           rel="noreferrer"
           className="block text-sm break-all text-muted-foreground underline-offset-4 hover:underline dark:text-muted-foreground/70"
         >
-          {category.url}
+          {displayUrl}
         </a>
+
+        {ordered.length > 1 && (
+          <div className="pt-2">
+            <LocaleTabs categoryId={category.id} locales={ordered} current={locale} />
+          </div>
+        )}
       </div>
+
+      {localeError && (
+        <p className="rounded-lg bg-amber-500/10 px-3 py-3 text-sm text-amber-700 dark:text-amber-400">
+          <span className="font-medium">Le multilingue n&apos;est pas encore actif en base.</span>{" "}
+          Joue <code>supabase/migrations/2026-09-22_multilingue_et_suivi.sql</code> dans le
+          SQL Editor de Supabase : la table des langues, la longueur cible, la date de
+          publication et la boucle de refus en dépendent. En attendant, la page
+          fonctionne en français comme avant. ({localeError.message})
+        </p>
+      )}
 
       <MetricRow>
         <Metric label="Impressions" value={metrics?.impressions ?? null} />
@@ -330,13 +488,81 @@ export default async function CategoryPage({
               : undefined
           }
         />
-        <Metric label="Volume / mois" value={category.keyword_volume} />
+        <Metric
+          label="Volume / mois"
+          value={localeRow?.keyword_volume ?? category.keyword_volume}
+        />
         <Metric
           label="Difficulté SEO"
-          value={category.keyword_difficulty}
+          value={localeRow?.keyword_difficulty ?? category.keyword_difficulty}
           hint={category.keyword_intent ?? undefined}
         />
       </MetricRow>
+
+      {/* ------------------------------------------------- phase 1 ------- */}
+
+      <Card
+        title={`Phase 1 · Mot-clé principal — ${marche.label}`}
+        description={`Proposé à partir des données : requêtes déjà remontées par Search Console, catalogue de la page, puis volumes et difficulté mesurés sur le marché ${marche.country}. Rien n'est retenu sans clic.`}
+      >
+        <div className="space-y-4">
+          <p className="text-sm">
+            <span className="text-muted-foreground">Retenu actuellement : </span>
+            <span className="font-medium">{keyword || "aucun"}</span>
+          </p>
+          <KeywordProposal
+            categoryId={category.id}
+            locale={locale}
+            currentKeyword={keyword}
+          />
+        </div>
+      </Card>
+
+      <Card
+        title="Phase 1 · Balises et segment d'URL"
+        description="Se décident avant le texte, et se retravaillent après sans le regénérer. Une fois validées, la rédaction les reprend à l'identique."
+      >
+        <MetadataForm
+          categoryId={category.id}
+          locale={locale}
+          initial={{
+            title: localeRow?.title ?? "",
+            metaDescription: localeRow?.meta_description ?? "",
+            h1: localeRow?.h1 ?? "",
+            linkRewrite: localeRow?.link_rewrite ?? linkRewriteFromUrl(displayUrl) ?? "",
+            approved: Boolean(localeRow?.metadata_approved),
+            generatedAt: localeRow?.metadata_generated_at ?? null,
+          }}
+        />
+      </Card>
+
+      <Card
+        title="Phase 1 · Longueur à viser"
+        description="Médiane des textes réellement classés dans le top 10 sur ce mot-clé, dans cette langue. Ni valeur fixe ni improvisation."
+      >
+        <TargetLengthForm
+          categoryId={category.id}
+          locale={locale}
+          current={localeRow?.target_length ?? null}
+          measuredAt={mesure?.measuredAt ?? null}
+        />
+      </Card>
+
+      {/* ------------------------------------------------- phase 2 ------- */}
+
+      <Card
+        title={`Phase 2 · Rédaction — ${marche.label}`}
+        description="Les deux descriptions, écrites pour les balises validées, à la longueur du top 10, en reprenant les raisons des refus précédents."
+      >
+        <DescriptionForm
+          categoryId={category.id}
+          locale={locale}
+          hasKeyword={Boolean(keyword)}
+          metadataApproved={Boolean(localeRow?.metadata_approved)}
+          targetLength={localeRow?.target_length ?? null}
+          hasVersion={Boolean(latest)}
+        />
+      </Card>
 
       {family && (family.parent || family.siblings.length > 0 || family.children.length > 0) && (
         <Card
@@ -406,180 +632,199 @@ export default async function CategoryPage({
         </Card>
       )}
 
-      {(category.catalog_short_description || category.catalog_long_description) && (
+      {(localeRow?.catalog_short_description ||
+        localeRow?.catalog_long_description ||
+        category.catalog_short_description ||
+        category.catalog_long_description) && (
         <Card
-          title="Descriptions actuellement en ligne"
+          title={`Descriptions actuellement en ligne — ${marche.label}`}
           description="Telles qu'exportées de PrestaShop. C'est ce que les deux livrables remplacent."
         >
           <div className="space-y-4">
-            <Output label="Courte — haut de page" value={category.catalog_short_description} />
-            <Output label="Longue — bas de page" value={category.catalog_long_description} />
+            <Output
+              label="Courte — haut de page"
+              value={
+                localeRow?.catalog_short_description ?? category.catalog_short_description
+              }
+            />
+            <Output
+              label="Longue — bas de page"
+              value={
+                localeRow?.catalog_long_description ?? category.catalog_long_description
+              }
+            />
           </div>
         </Card>
       )}
 
-      <Card
-        title="Traitement complet"
-        description="Relève la page, analyse la concurrence, déduit le champ sémantique et rédige — en une fois."
-      >
-        <PipelineForm
-          categoryId={category.id}
-          initialBrief={category.brief ?? ""}
-          hasVersion={Boolean(latest)}
-        />
-      </Card>
-
       <details className="space-y-8">
         <summary className="cursor-pointer text-sm font-medium text-muted-foreground select-none hover:text-slate-900 dark:text-muted-foreground/70 dark:hover:text-slate-100">
-          Étapes détaillées, à lancer séparément
+          Traitement en un clic et étapes détaillées, en français
         </summary>
         <div className="mt-4 space-y-8">
+          <Card
+            title="Traitement complet"
+            description="Relève la page, analyse la concurrence, déduit le champ sémantique et rédige — en une fois, en français. Utile pour aller vite ; les deux phases ci-dessus donnent plus de contrôle."
+          >
+            <PipelineForm
+              categoryId={category.id}
+              initialBrief={category.brief ?? ""}
+              hasVersion={Boolean(latest)}
+            />
+          </Card>
+
           <Card
             title="Données de la page"
             description="Va chercher les balises, le texte, les produits et les filtres directement sur l'URL."
           >
-        <div className="space-y-3">
-          <ImportForm categoryId={category.id} />
-          {category.source_fetched_at && (
-            <p className="text-xs text-muted-foreground">
-              Dernière récupération : {new Date(category.source_fetched_at).toLocaleString("fr-FR")}
-            </p>
-          )}
-        </div>
-      </Card>
-
-      {Boolean(source.products?.length || source.facets?.length) && (
-        <Card
-          title="Matière première relevée"
-          description="Produits et filtres réellement présents. C'est ce qui nourrit la rédaction."
-        >
-          <div className="grid gap-6 sm:grid-cols-2">
-            <div className="space-y-2">
-              <p className="text-xs font-medium text-muted-foreground">
-                Produits{source.productCount ? ` (${source.productCount} au total)` : ""}
-              </p>
-              <ul className="space-y-1 text-sm">
-                {(source.products ?? []).slice(0, 15).map((product) => (
-                  <li key={product} className="truncate">
-                    {product}
-                  </li>
-                ))}
-                {(source.products?.length ?? 0) > 15 && (
-                  <li className="text-xs text-muted-foreground/70">
-                    + {(source.products?.length ?? 0) - 15} autres
-                  </li>
-                )}
-              </ul>
+            <div className="space-y-3">
+              <ImportForm categoryId={category.id} />
+              {category.source_fetched_at && (
+                <p className="text-xs text-muted-foreground">
+                  Dernière récupération : {new Date(category.source_fetched_at).toLocaleString("fr-FR")}
+                </p>
+              )}
             </div>
-            <div className="space-y-2">
-              <p className="text-xs font-medium text-muted-foreground">Filtres</p>
-              <ul className="space-y-2 text-sm">
-                {(source.facets ?? []).map((facet) => (
-                  <li key={facet.name}>
-                    <span className="font-medium">{facet.name}</span>{" "}
-                    <span className="text-muted-foreground">
-                      {facet.values.slice(0, 8).join(", ")}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </div>
-        </Card>
-      )}
+          </Card>
 
-      <Card
-        title="Concurrence sur le mot-clé principal"
-        description="Le classement organique relevé sur Google. Il sert de cahier des charges implicite à la rédaction : couvrir ce socle, puis s'en démarquer."
-      >
-        <div className="space-y-4">
-          <SerpForm categoryId={category.id} hasData={Boolean(serp.results?.length)} />
-
-          {serp.results && serp.results.length > 0 && (
-            <>
-              <p className="text-xs text-muted-foreground">
-                Relevé le{" "}
-                {category.serp_fetched_at
-                  ? new Date(category.serp_fetched_at).toLocaleString("fr-FR")
-                  : "—"}
-                {serp.ownRank
-                  ? ` · le site est en position ${serp.ownRank}`
-                  : " · le site n'apparaît pas dans ce classement"}
-              </p>
-              <ol className="space-y-3">
-                {serp.results.slice(0, 5).map((result) => (
-                  <li key={result.url} className="flex gap-3 text-sm">
-                    <span className="w-5 shrink-0 text-right font-semibold tabular-nums text-muted-foreground/70">
-                      {result.rank}
-                    </span>
-                    <span className="min-w-0">
-                      <a
-                        href={result.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="font-medium underline-offset-4 hover:underline"
-                      >
-                        {result.title}
-                      </a>
-                      <span className="ml-2 text-xs text-muted-foreground/70">{result.domain}</span>
-                      {result.description && (
-                        <span className="mt-0.5 block text-xs text-muted-foreground">
-                          {result.description}
+          {Boolean(source.products?.length || source.facets?.length) && (
+            <Card
+              title="Matière première relevée"
+              description="Produits et filtres réellement présents. C'est ce qui nourrit la rédaction."
+            >
+              <div className="grid gap-6 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <p className="text-xs font-medium text-muted-foreground">
+                    Produits{source.productCount ? ` (${source.productCount} au total)` : ""}
+                  </p>
+                  <ul className="space-y-1 text-sm">
+                    {(source.products ?? []).slice(0, 15).map((product) => (
+                      <li key={product} className="truncate">
+                        {product}
+                      </li>
+                    ))}
+                    {(source.products?.length ?? 0) > 15 && (
+                      <li className="text-xs text-muted-foreground/70">
+                        + {(source.products?.length ?? 0) - 15} autres
+                      </li>
+                    )}
+                  </ul>
+                </div>
+                <div className="space-y-2">
+                  <p className="text-xs font-medium text-muted-foreground">Filtres</p>
+                  <ul className="space-y-2 text-sm">
+                    {(source.facets ?? []).map((facet) => (
+                      <li key={facet.name}>
+                        <span className="font-medium">{facet.name}</span>{" "}
+                        <span className="text-muted-foreground">
+                          {facet.values.slice(0, 8).join(", ")}
                         </span>
-                      )}
-                    </span>
-                  </li>
-                ))}
-              </ol>
-            </>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            </Card>
           )}
-        </div>
-      </Card>
 
-      <Card
-        title="Mots-clés et brief"
-        description="Ce bloc pilote entièrement la rédaction."
-      >
-        <KeywordsForm
-          categoryId={category.id}
-          initialKeyword={category.target_keyword ?? ""}
-          initialSecondary={category.secondary_keywords ?? []}
-          initialFanQueries={category.fan_queries ?? []}
-          initialBrief={category.brief ?? ""}
-          suggestions={gsc.queries ?? []}
-        />
-      </Card>
+          <Card
+            title="Concurrence sur le mot-clé principal"
+            description="Le classement organique relevé sur Google. Il sert de cahier des charges implicite à la rédaction : couvrir ce socle, puis s'en démarquer."
+          >
+            <div className="space-y-4">
+              <SerpForm categoryId={category.id} hasData={Boolean(serp.results?.length)} />
 
-      <Card
-        title="Rédaction"
-        description="Génère le texte optimisé et le note sur le même barème que la version en ligne."
-      >
-        <div className="space-y-4">
-          <div className="flex flex-wrap items-center gap-3">
-            {before && <ScoreBadge score={before.score} label="en ligne" />}
-            {before && latest?.score != null && (
-              <span aria-hidden className="text-muted-foreground/70">
-                →
-              </span>
-            )}
-            {latest?.score != null && (
-              <ScoreBadge score={latest.score} label={`v${latest.version}`} />
-            )}
-          </div>
-          <GenerateForm categoryId={category.id} hasVersion={Boolean(latest)} />
-        </div>
-      </Card>
+              {serp.results && serp.results.length > 0 && (
+                <>
+                  <p className="text-xs text-muted-foreground">
+                    Relevé le{" "}
+                    {category.serp_fetched_at
+                      ? new Date(category.serp_fetched_at).toLocaleString("fr-FR")
+                      : "—"}
+                    {serp.ownRank
+                      ? ` · le site est en position ${serp.ownRank}`
+                      : " · le site n'apparaît pas dans ce classement"}
+                  </p>
+                  <ol className="space-y-3">
+                    {serp.results.slice(0, 5).map((result) => (
+                      <li key={result.url} className="flex gap-3 text-sm">
+                        <span className="w-5 shrink-0 text-right font-semibold tabular-nums text-muted-foreground/70">
+                          {result.rank}
+                        </span>
+                        <span className="min-w-0">
+                          <a
+                            href={result.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-medium underline-offset-4 hover:underline"
+                          >
+                            {result.title}
+                          </a>
+                          <span className="ml-2 text-xs text-muted-foreground/70">{result.domain}</span>
+                          {result.description && (
+                            <span className="mt-0.5 block text-xs text-muted-foreground">
+                              {result.description}
+                            </span>
+                          )}
+                        </span>
+                      </li>
+                    ))}
+                  </ol>
+                </>
+              )}
+            </div>
+          </Card>
+
+          <Card
+            title="Mots-clés secondaires et brief"
+            description="Complète la phase 1 : le mot-clé principal se choisit ci-dessus, les secondaires et les fan queries se saisissent ici."
+          >
+            <KeywordsForm
+              categoryId={category.id}
+              initialKeyword={category.target_keyword ?? ""}
+              initialSecondary={category.secondary_keywords ?? []}
+              initialFanQueries={category.fan_queries ?? []}
+              initialBrief={category.brief ?? ""}
+              suggestions={gsc.queries ?? []}
+            />
+          </Card>
+
+          <Card
+            title="Rédaction seule"
+            description="Génère le texte optimisé et le note sur le même barème que la version en ligne."
+          >
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center gap-3">
+                {before && <ScoreBadge score={before.score} label="en ligne" />}
+                {before && latest?.score != null && (
+                  <span aria-hidden className="text-muted-foreground/70">
+                    →
+                  </span>
+                )}
+                {latest?.score != null && (
+                  <ScoreBadge score={latest.score} label={`v${latest.version}`} />
+                )}
+              </div>
+              <GenerateForm categoryId={category.id} hasVersion={Boolean(latest)} />
+            </div>
+          </Card>
         </div>
       </details>
 
       {latest ? (
         <Card
-          title={`Version optimisée v${latest.version}`}
+          title={`Version optimisée v${latest.version} — ${marche.label}`}
           description={`${latest.engine ?? "moteur inconnu"}${
             latest.editorial_angle ? ` · angle : ${latest.editorial_angle}` : ""
           } · ${new Date(latest.created_at).toLocaleString("fr-FR")}`}
         >
           <div className="space-y-4">
+            {latest.rejection_reason && (
+              <p className="rounded-lg bg-destructive/10 px-3 py-3 text-sm text-destructive">
+                <span className="font-medium">Version refusée.</span>{" "}
+                {latest.rejection_reason}
+              </p>
+            )}
             {payload.groundedInPage === false && (
               <p className="rounded-lg bg-amber-500/10 px-3 py-3 text-sm text-amber-700 dark:text-amber-400">
                 <span className="font-medium">
@@ -589,6 +834,15 @@ export default async function CategoryPage({
                 matière, référence ou gamme de prix citée ici n&apos;a été vérifiée contre le
                 catalogue. Relance après avoir débloqué l&apos;accès à la page pour obtenir un
                 texte réellement ancré.
+              </p>
+            )}
+            {payload.longueur !== undefined && (
+              <p className="text-xs text-muted-foreground">
+                Longueur obtenue : {payload.longueur.toLocaleString("fr-FR")} caractères
+                {payload.targetLength
+                  ? ` pour ${payload.targetLength.toLocaleString("fr-FR")} visés`
+                  : " (aucune cible mesurée)"}
+                .
               </p>
             )}
             {analysis && (
@@ -627,7 +881,16 @@ export default async function CategoryPage({
                 </p>
               </div>
             )}
-            {compliance && <CompliancePanel report={compliance} />}
+            {compliance && payload.complianceChecked !== false && (
+              <CompliancePanel report={compliance} />
+            )}
+            {payload.complianceChecked === false && (
+              <p className="rounded-lg bg-muted px-3 py-2 text-sm text-muted-foreground">
+                Contrôle automatique des règles métier réservé au français : les
+                tournures interdites sont détectées sur des expressions françaises. Ce
+                texte est à relire à l&apos;œil.
+              </p>
+            )}
             {similarity && <SimilarityPanel report={similarity} />}
             <Output label="Title" value={latest.title} />
             <Output label="Meta description" value={latest.meta_description} />
@@ -653,10 +916,23 @@ export default async function CategoryPage({
             <div className="border-t border-border pt-4 ">
               <ChecksList checks={checksFromPayload(latest.payload)} />
             </div>
+            <div className="border-t border-border pt-4">
+              <RejectForm
+                optimizationId={latest.id}
+                categoryId={category.id}
+                locale={locale}
+                version={latest.version}
+                existingReason={latest.rejection_reason ?? null}
+                rejectedAt={latest.rejected_at ?? null}
+              />
+            </div>
           </div>
         </Card>
       ) : (
-        <EmptyState>Pas encore de version optimisée. Lance la rédaction pour en générer une.</EmptyState>
+        <EmptyState>
+          Pas encore de version optimisée en {marche.label}. Fais la phase 1, puis lance la
+          rédaction.
+        </EmptyState>
       )}
 
       {before && (
@@ -668,7 +944,7 @@ export default async function CategoryPage({
         </Card>
       )}
 
-      {optimizations && optimizations.length > 1 && (
+      {optimizations.length > 1 && (
         <Card title="Historique">
           <ul className="space-y-2 text-sm">
             {optimizations.slice(1).map((optimization) => (
@@ -679,6 +955,9 @@ export default async function CategoryPage({
                   <span className="text-xs text-muted-foreground">
                     {optimization.editorial_angle}
                   </span>
+                )}
+                {optimization.rejection_reason && (
+                  <span className="text-xs text-destructive">refusée</span>
                 )}
                 <span className="text-xs text-muted-foreground/70">
                   {new Date(optimization.created_at).toLocaleString("fr-FR")}

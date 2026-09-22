@@ -3,35 +3,28 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
-import { createClient } from "@/lib/supabase/server";
-import { audit } from "@/lib/moulinette";
 import {
   generateCategoryContent,
   suggestKeywords,
   GenerationError,
-  GENERATION_MODEL,
-  type CategoryContent,
   type KeywordSuggestion,
 } from "@/lib/generate";
 import {
-  buildFamily,
+  parseCatalogueAllLocales,
   parseCatalogueCsv,
   CatalogueParseError,
-  type Family,
 } from "@/lib/catalogue";
-import { checkCompliance, type ComplianceReport, type Market } from "@/lib/compliance";
+import type { Market } from "@/lib/compliance";
+import { DEFAULT_LOCALE, localeLabel, sortLocales } from "@/lib/locales";
 import {
-  buildReport,
-  compare,
-  type Neighbour,
-  type SimilarityReport,
-} from "@/lib/similarity";
-import {
-  renderCategoryHtml,
-  renderCategoryText,
-  renderShortDescriptionHtml,
-  renderShortDescriptionText,
-} from "@/lib/render";
+  complianceSummary,
+  loadProjectContext,
+  persistOptimization,
+  rejectTakenKeywords,
+  similaritySummary,
+  type PipelineStep,
+} from "@/lib/optimization";
+import { requireUser, optionalText, text } from "@/lib/session";
 import { extractFromUrl, ExtractionError } from "@/lib/extract";
 import {
   parseGscCsv,
@@ -46,22 +39,7 @@ import {
 import { parseSemrushCsv, keywordKey, SemrushParseError } from "@/lib/semrush";
 import { fetchSerp, SerpError, type SerpAnalysis } from "@/lib/dataforseo";
 
-async function requireUser() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) redirect("/login");
-  return { supabase, user };
-}
-
-function text(formData: FormData, key: string): string {
-  return String(formData.get(key) ?? "").trim();
-}
-
-function optionalText(formData: FormData, key: string): string | null {
-  return text(formData, key) || null;
-}
+export type { PipelineStep };
 
 export async function createProject(formData: FormData) {
   const { supabase, user } = await requireUser();
@@ -117,282 +95,6 @@ export type GenerationState = {
   score?: number;
 };
 
-/** Ce que le projet impose et ce que les autres catégories occupent déjà. */
-type ProjectContext = {
-  takenKeywords: string[];
-  takenAngles: string[];
-  family: Family | null;
-};
-
-type SupabaseClient = Awaited<ReturnType<typeof createClient>>;
-
-/**
- * Rassemble en une passe ce qui empêche deux textes de se ressembler : les
- * mots-clés déjà attribués sur le site, les angles occupés dans la famille, et
- * la position de la catégorie dans son arborescence.
- *
- * Les deux périmètres sont volontairement différents. Un mot-clé ne peut cibler
- * qu'une seule page du site, sinon les deux se cannibalisent : l'exclusion est
- * donc globale. Un angle éditorial, lui, ne s'exclut que dans la famille — il
- * n'y en a que dix, et les réserver à l'échelle du projet les épuiserait dès la
- * onzième catégorie, laissant le modèle sans aucun angle à retenir. Deux
- * catégories qui ne se croisent jamais peuvent partager un angle sans dommage ;
- * deux sœurs, non.
- */
-async function loadProjectContext(
-  supabase: SupabaseClient,
-  category: {
-    id: string;
-    project_id: string;
-    external_id: number | null;
-    parent_external_id: number | null;
-    name: string;
-    url: string;
-    target_keyword: string | null;
-  },
-): Promise<ProjectContext> {
-  const { data: rows } = await supabase
-    .from("categories")
-    .select(
-      "id, external_id, parent_external_id, name, url, target_keyword, optimizations(editorial_angle, version)",
-    )
-    .eq("project_id", category.project_id);
-
-  const all = rows ?? [];
-  const takenKeywords: string[] = [];
-  const angles = new Map<string, string | null>();
-
-  for (const row of all) {
-    if (row.id === category.id) continue;
-    if (row.target_keyword) takenKeywords.push(row.target_keyword);
-
-    const latest = [...(row.optimizations ?? [])].sort((a, b) => b.version - a.version)[0];
-    if (latest?.editorial_angle) angles.set(row.id, latest.editorial_angle);
-  }
-
-  const family =
-    category.external_id === null ? null : buildFamily(category, all, angles);
-
-  // Sans arborescence on n'a pas de famille : on retombe sur le projet entier,
-  // en se limitant aux angles les plus récents pour ne pas vider la liste.
-  const relatives = family
-    ? [family.parent, ...family.siblings, ...family.children]
-    : [...angles.values()].map((angle) => ({ editorialAngle: angle }));
-
-  const takenAngles: string[] = [];
-  for (const member of relatives) {
-    const angle = member?.editorialAngle;
-    if (angle && !takenAngles.includes(angle)) takenAngles.push(angle);
-  }
-
-  return { takenKeywords, takenAngles: takenAngles.slice(0, 8), family };
-}
-
-/**
- * Confronte le texte qu'on vient d'écrire à ceux des autres catégories du site.
- *
- * Les garde-fous en amont — registre des mots-clés, angle réservé à la famille,
- * ancrage dans la page — rendent la duplication improbable sans jamais la
- * constater. Celui-ci ne fait que constater, et c'est le seul qui puisse dire
- * si les autres ont tenu.
- *
- * La comparaison porte sur tout le projet, pas seulement sur la famille : une
- * catégorie ambre et une catégorie opale sans lien d'arborescence puisent dans
- * le même pool d'arguments autorisés et finissent par se ressembler. Le lien de
- * parenté sert à hiérarchiser le verdict, pas à restreindre la recherche.
- */
-async function compareWithSiblings(
-  supabase: SupabaseClient,
-  args: {
-    categoryId: string;
-    projectId: string;
-    categoryName: string;
-    externalId: number | null;
-    parentExternalId: number | null;
-    text: string;
-  },
-): Promise<SimilarityReport | null> {
-  const { data: rows } = await supabase
-    .from("categories")
-    .select(
-      "id, name, external_id, parent_external_id, optimizations(version, plain:payload->>plain)",
-    )
-    .eq("project_id", args.projectId)
-    .neq("id", args.categoryId);
-
-  if (!rows || rows.length === 0) return null;
-
-  const voisins: Neighbour[] = [];
-
-  for (const row of rows) {
-    const latest = [...(row.optimizations ?? [])].sort(
-      (a, b) => b.version - a.version,
-    )[0];
-    const other = latest?.plain;
-    if (!other) continue;
-
-    const lien =
-      args.externalId !== null && row.parent_external_id === args.externalId
-        ? "fille"
-        : row.external_id !== null && row.external_id === args.parentExternalId
-          ? "mère"
-          : args.parentExternalId !== null &&
-              row.parent_external_id === args.parentExternalId
-            ? "sœur"
-            : "projet";
-
-    const { score, phrases } = compare(args.text, args.categoryName, other, row.name);
-    voisins.push({ categoryId: row.id, name: row.name, lien, score, phrases });
-  }
-
-  return voisins.length > 0 ? buildReport(voisins) : null;
-}
-
-/**
- * Rend, note, contrôle et archive une version.
- *
- * Le contrôle des règles métier porte sur les deux livrables réunis : un
- * interdit dans la description courte compte autant que dans la longue.
- */
-async function persistOptimization(
-  supabase: SupabaseClient,
-  args: {
-    categoryId: string;
-    categoryName: string;
-    projectId: string;
-    externalId: number | null;
-    parentExternalId: number | null;
-    keyword: string;
-    market: Market;
-    content: CategoryContent;
-    userId: string;
-    groundedInPage: boolean;
-    steps?: PipelineStep[];
-  },
-): Promise<{
-  score: number;
-  compliance: ComplianceReport;
-  similarity: SimilarityReport | null;
-  error: string | null;
-}> {
-  const { content } = args;
-
-  const shortHtml = renderShortDescriptionHtml(content);
-  const shortText = renderShortDescriptionText(content);
-  const longHtml = renderCategoryHtml(content);
-  const longText = renderCategoryText(content);
-
-  const { checks, score } = audit(
-    {
-      title: content.title,
-      metaDescription: content.metaDescription,
-      h1: content.h1,
-      content: longText,
-    },
-    args.keyword,
-  );
-
-  const compliance = checkCompliance(`${shortText}\n\n${longText}`, {
-    market: args.market,
-    categoryName: args.categoryName,
-  });
-
-  const similarity = await compareWithSiblings(supabase, {
-    categoryId: args.categoryId,
-    projectId: args.projectId,
-    categoryName: args.categoryName,
-    externalId: args.externalId,
-    parentExternalId: args.parentExternalId,
-    text: `${shortText}\n\n${longText}`,
-  });
-
-  const { error } = await supabase.from("optimizations").insert({
-    category_id: args.categoryId,
-    title: content.title,
-    meta_description: content.metaDescription,
-    h1: content.h1,
-    short_description: shortHtml,
-    content: longHtml,
-    score,
-    engine: GENERATION_MODEL,
-    editorial_angle: content.editorialAngle,
-    payload: {
-      checks,
-      structured: content,
-      plain: longText,
-      shortPlain: shortText,
-      compliance,
-      similarity,
-      ...(args.steps ? { steps: args.steps } : {}),
-      // Une version rédigée sans relevé de page ne peut pas être jugée comme une
-      // autre : les matières et références qu'elle cite ne sont pas vérifiées
-      // contre le catalogue.
-      groundedInPage: args.groundedInPage,
-    },
-    created_by: args.userId,
-  });
-
-  return { score, compliance, similarity, error: error?.message ?? null };
-}
-
-/**
- * Écarte les propositions qui appartiennent déjà à une autre page.
- *
- * Le prompt interdit au modèle de proposer un mot-clé attribué ailleurs, mais
- * une consigne n'est pas une garantie : il a proposé « colliers pierres
- * naturelles en gros » comme secondaire à la catégorie mère, alors que c'est le
- * mot-clé principal de sa fille. Optimiser la mère dessus, c'est exactement la
- * cannibalisation qu'on cherche à éviter — et elle est d'autant plus nocive
- * qu'elle oppose deux pages du même site.
- *
- * Le filtre est donc appliqué en dur après coup, sur une forme normalisée
- * (accents et apostrophes neutralisés) pour qu'une variante d'écriture ne passe
- * pas au travers.
- */
-function rejectTakenKeywords(
-  proposed: string[],
-  reserved: string[],
-): { kept: string[]; rejected: string[] } {
-  const taken = new Set(reserved.map(keywordKey));
-  const kept: string[] = [];
-  const rejected: string[] = [];
-
-  for (const value of proposed) {
-    if (taken.has(keywordKey(value))) rejected.push(value);
-    else kept.push(value);
-  }
-  return { kept, rejected };
-}
-
-/** Une phrase sur la ressemblance avec les autres textes du site. */
-function similaritySummary(report: SimilarityReport | null): string {
-  if (!report) return "";
-  const pire = report.voisins[0];
-  if (report.verdict === "distinct") {
-    return ` Ressemblance : ${report.pire}% au plus fort, le texte se tient à distance des autres.`;
-  }
-  return (
-    ` Ressemblance : ${report.pire}% avec « ${pire?.name ?? "?"} »` +
-    (report.verdict === "trop proche"
-      ? " — trop proche, à réécrire."
-      : " — à surveiller.")
-  );
-}
-
-/** Une phrase sur l'état du contrôle métier, à coller au message de retour. */
-function complianceSummary(report: ComplianceReport): string {
-  const errors = report.issues.filter((issue) => issue.severity === "erreur").length;
-  const warnings = report.issues.length - errors;
-
-  if (errors === 0 && warnings === 0) return " Règles métier : aucun écart détecté.";
-  if (errors === 0) {
-    return ` Règles métier : ${warnings} point(s) à vérifier à l'œil.`;
-  }
-  return ` Règles métier : ${errors} interdit(s) à corriger avant publication${
-    warnings > 0 ? `, ${warnings} point(s) à vérifier` : ""
-  }.`;
-}
-
 /**
  * Passe la catégorie à la moulinette : génération par Claude, rendu HTML,
  * audit, puis archivage en nouvelle version.
@@ -441,6 +143,7 @@ export async function runMoulinette(
   const { takenKeywords, takenAngles, family } = await loadProjectContext(
     supabase,
     category,
+    DEFAULT_LOCALE,
   );
 
   const source = (category.source_data ?? {}) as {
@@ -482,6 +185,7 @@ export async function runMoulinette(
       currentLongDescription: category.catalog_long_description,
       takenKeywords,
       takenAngles,
+      locale: DEFAULT_LOCALE,
     });
   } catch (error) {
     if (error instanceof GenerationError) {
@@ -501,6 +205,7 @@ export async function runMoulinette(
     projectId: category.project_id,
     externalId: category.external_id,
     parentExternalId: category.parent_external_id,
+    locale: DEFAULT_LOCALE,
     keyword,
     market: (project?.market ?? null) as Market,
     content,
@@ -777,12 +482,20 @@ export type CatalogueImportState = {
 
 /**
  * Importe l'export de catalogue PrestaShop : la liste faisant autorité des
- * catégories, leur arborescence et les descriptions déjà en ligne.
+ * catégories, leur arborescence et les descriptions déjà en ligne, DANS TOUTES
+ * LES LANGUES du fichier.
+ *
+ * Deux écritures, parce qu'il y a deux natures d'information. `categories`
+ * reçoit ce qui ne dépend pas de la langue — identifiant PrestaShop,
+ * arborescence, nombre de produits — avec l'URL française comme clé, celle sur
+ * laquelle l'outil travaillait déjà. `category_locales` reçoit une ligne par
+ * langue publiée : son nom, son adresse, son segment d'URL, ses descriptions.
  *
  * L'upsert porte sur l'URL, pas sur l'identifiant PrestaShop : une catégorie
  * déjà suivie — créée depuis un export Search Console, par exemple — est
  * complétée au lieu d'être dupliquée. Les mots-clés, briefs et optimisations
- * déjà saisis ne sont jamais écrasés.
+ * déjà saisis ne sont jamais écrasés : la liste des colonnes mises à jour est
+ * explicite, et aucune n'est du travail éditorial.
  */
 export async function importCatalogue(
   _prev: CatalogueImportState,
@@ -800,9 +513,13 @@ export async function importCatalogue(
     return { status: "error", message: "Dépose l'export catalogue ou colle son contenu." };
   }
 
+  const pivot = optionalText(formData, "locale") ?? DEFAULT_LOCALE;
+
   let parsed;
+  let multilingue;
   try {
-    parsed = parseCatalogueCsv(content, optionalText(formData, "locale") ?? undefined);
+    parsed = parseCatalogueCsv(content, pivot);
+    multilingue = parseCatalogueAllLocales(content);
   } catch (error) {
     if (error instanceof CatalogueParseError) {
       return { status: "error", message: error.message };
@@ -832,10 +549,85 @@ export async function importCatalogue(
     return { status: "error", message: `Import impossible : ${error.message}` };
   }
 
+  /* --- les autres langues ---------------------------------------------- */
+  //
+  // On relit les identifiants après l'upsert : `category_locales` référence la
+  // catégorie par sa clé interne, que le fichier ne connaît pas.
+
+  const { data: saved } = await supabase
+    .from("categories")
+    .select("id, external_id")
+    .eq("project_id", projectId)
+    .not("external_id", "is", null);
+
+  const idByExternal = new Map(
+    (saved ?? []).map((row) => [row.external_id as number, row.id as string]),
+  );
+
+  const localeRows: {
+    category_id: string;
+    locale: string;
+    project_id: string;
+    name: string;
+    url: string | null;
+    link_rewrite: string | null;
+    catalog_short_description: string | null;
+    catalog_long_description: string | null;
+  }[] = [];
+  const comptes = new Map<string, number>();
+
+  for (const row of multilingue.rows) {
+    const categoryId = idByExternal.get(row.externalId);
+    // Une catégorie absente de `categories` n'a pas d'URL dans la langue pivot :
+    // elle n'est pas publiée là où l'outil travaille, on ne l'invente pas.
+    if (!categoryId) continue;
+
+    for (const entry of row.locales) {
+      localeRows.push({
+        category_id: categoryId,
+        locale: entry.locale,
+        project_id: projectId,
+        name: entry.name,
+        url: entry.url,
+        link_rewrite: entry.linkRewrite,
+        catalog_short_description: entry.shortDescription,
+        catalog_long_description: entry.longDescription,
+      });
+      comptes.set(entry.locale, (comptes.get(entry.locale) ?? 0) + 1);
+    }
+  }
+
+  let localeError: string | null = null;
+  let localeCount = 0;
+
+  if (localeRows.length > 0) {
+    // Par paquets : dix langues sur cent quatre-vingts catégories font près de
+    // deux mille lignes, et une seule requête de cette taille finit en délai
+    // dépassé sans rien écrire.
+    for (let i = 0; i < localeRows.length; i += 400) {
+      const { error: upsertError, count: written } = await supabase
+        .from("category_locales")
+        .upsert(localeRows.slice(i, i + 400), {
+          onConflict: "category_id,locale",
+          count: "exact",
+        });
+
+      if (upsertError) {
+        localeError = upsertError.message;
+        break;
+      }
+      localeCount += written ?? 0;
+    }
+  }
+
   revalidatePath(`/projects/${projectId}`);
 
   const withParent = rows.filter((row) => row.parentExternalId !== null).length;
   const withLong = rows.filter((row) => row.longDescription).length;
+
+  const detailLangues = sortLocales([...comptes.keys()])
+    .map((code) => `${localeLabel(code)} ${comptes.get(code)}`)
+    .join(" · ");
 
   return {
     status: "ok",
@@ -843,6 +635,12 @@ export async function importCatalogue(
       `${rows.length} catégories importées en ${locale} (langues du fichier : ${locales.join(", ")}). ` +
       `${withParent} rattachées à une mère, ${withLong} avec une description longue déjà en ligne. ` +
       `${count ?? 0} lignes écrites.` +
+      (localeError
+        ? ` Les versions par langue n'ont pas pu être enregistrées : ${localeError}` +
+          " — la migration multilingue a-t-elle été jouée ?"
+        : localeCount > 0
+          ? ` ${localeCount} lignes par langue : ${detailLangues}.`
+          : "") +
       (skipped.length > 0 ? ` ${skipped.length} ligne(s) écartée(s).` : ""),
     skipped: skipped.slice(0, 15).map((item) => `Ligne ${item.line} : ${item.reason}`),
   };
@@ -1396,12 +1194,6 @@ export async function fetchSerpAction(
 
 /* ------------------------------------------------- pipeline complet ------ */
 
-export type PipelineStep = {
-  label: string;
-  status: "ok" | "skipped" | "error";
-  detail: string;
-};
-
 export type PipelineState = {
   status: "idle" | "ok" | "error";
   message: string;
@@ -1552,6 +1344,7 @@ export async function runPipeline(
   const { takenKeywords, takenAngles, family } = await loadProjectContext(
     supabase,
     category,
+    DEFAULT_LOCALE,
   );
 
   let secondaryKeywords = category.secondary_keywords ?? [];
@@ -1644,6 +1437,7 @@ export async function runPipeline(
       currentLongDescription: category.catalog_long_description,
       takenKeywords,
       takenAngles,
+      locale: DEFAULT_LOCALE,
     });
   } catch (error) {
     const message = error instanceof GenerationError ? error.message : (error as Error).message;
@@ -1668,6 +1462,7 @@ export async function runPipeline(
     projectId: category.project_id,
     externalId: category.external_id,
     parentExternalId: category.parent_external_id,
+    locale: DEFAULT_LOCALE,
     keyword,
     market,
     content,
