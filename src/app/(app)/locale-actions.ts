@@ -91,9 +91,12 @@ type LocaleRow = {
 };
 
 const LOCALE_TABLE_HINT =
-  "La table des langues est absente : joue la migration " +
+  "La table des langues est absente : joue " +
   "`supabase/migrations/2026-09-22_multilingue_et_suivi.sql` dans le SQL Editor, " +
-  "puis réessaie.";
+  "puis `2026-09-22b_numerotation_par_langue.sql` dans une seconde exécution, " +
+  "puis réimporte le catalogue. Les deux fichiers ne peuvent pas être joués " +
+  "ensemble : l'éditeur Supabase réécrit les scripts contenant un `create table`, " +
+  "ce qui casse les corps de fonction.";
 
 /**
  * La ligne de travail d'une catégorie dans une langue, créée au besoin.

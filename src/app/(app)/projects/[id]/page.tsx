@@ -228,8 +228,9 @@ export default async function ProjectPage({
         <p className="rounded-lg bg-amber-500/10 px-3 py-3 text-sm text-amber-700 dark:text-amber-400">
           <span className="font-medium">Le multilingue n&apos;est pas encore actif en base.</span>{" "}
           Joue <code>supabase/migrations/2026-09-22_multilingue_et_suivi.sql</code> dans le SQL
-          Editor de Supabase, puis réimporte le catalogue pour créer les lignes des dix
-          langues. ({localeError.message})
+          Editor de Supabase, puis <code>2026-09-22b_numerotation_par_langue.sql</code> dans
+          une seconde exécution, puis réimporte le catalogue ci-dessous : c&apos;est
+          l&apos;import qui crée les lignes des dix langues. ({localeError.message})
         </p>
       )}
 

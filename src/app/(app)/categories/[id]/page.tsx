@@ -467,8 +467,9 @@ export default async function CategoryPage({
         <p className="rounded-lg bg-amber-500/10 px-3 py-3 text-sm text-amber-700 dark:text-amber-400">
           <span className="font-medium">Le multilingue n&apos;est pas encore actif en base.</span>{" "}
           Joue <code>supabase/migrations/2026-09-22_multilingue_et_suivi.sql</code> dans le
-          SQL Editor de Supabase : la table des langues, la longueur cible, la date de
-          publication et la boucle de refus en dépendent. En attendant, la page
+          SQL Editor de Supabase, puis <code>2026-09-22b_numerotation_par_langue.sql</code>
+          dans une seconde exécution : la table des langues, la longueur cible, la date
+          de publication et la boucle de refus en dépendent. En attendant, la page
           fonctionne en français comme avant. ({localeError.message})
         </p>
       )}

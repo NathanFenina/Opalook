@@ -145,19 +145,19 @@ drop index if exists public.optimizations_category_version_key;
 create unique index if not exists optimizations_category_locale_version_key
   on public.optimizations (category_id, locale, version);
 
-create or replace function public.set_optimization_version()
-returns trigger language plpgsql set search_path to 'public', 'pg_temp' as $$
-begin
-  if new.version is null or new.version = 0 then
-    select coalesce(max(version), 0) + 1
-      into new.version
-      from public.optimizations
-     where category_id = new.category_id
-       and locale = new.locale;
-  end if;
-  return new;
-end;
-$$;
+-- La fonction qui numérote les versions par langue est dans le fichier suivant,
+-- `2026-09-22b_numerotation_par_langue.sql`, et pas ici. La raison est
+-- pratiquement idiote et coûte pourtant une erreur : dès qu'un script contient
+-- un `create table`, l'éditeur SQL du dashboard y injecte ses propres lignes
+-- (« Added by Supabase: enable Row Level Security »), et cette réécriture casse
+-- les corps de fonction délimités par des dollars — « unterminated
+-- dollar-quoted string ». Séparer les deux est la seule façon fiable de jouer
+-- les deux depuis le dashboard.
+--
+-- Ce fichier-ci est sûr sans l'autre : l'ancienne fonction compte le maximum sur
+-- toute la catégorie, donc elle attribue des numéros plus hauts que nécessaire
+-- pour une nouvelle langue, mais jamais deux fois le même. L'index d'unicité
+-- ci-dessus tient.
 
 /* ----------------------------------------------- boucle de correction ---- */
 --

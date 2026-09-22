@@ -56,8 +56,14 @@ supabase/migrations/          # schéma versionné
 - **`project_members`** — les comptes invités sur un projet, par adresse e-mail
   (l'invitation fonctionne avant que le compte existe).
 
-> ⚠ **Migration à jouer.** `supabase/migrations/2026-09-22_multilingue_et_suivi.sql`
-> crée `category_locales`, la langue sur `optimizations` et les colonnes de refus.
+> ⚠ **Migrations à jouer, dans deux exécutions séparées.**
+> `2026-09-22_multilingue_et_suivi.sql` crée `category_locales`, la langue sur
+> `optimizations` et les colonnes de refus ; puis
+> `2026-09-22b_numerotation_par_langue.sql` fait compter les versions par langue.
+> Les deux ne peuvent pas être jouées ensemble depuis le dashboard : dès qu'un
+> script contient un `create table`, l'éditeur SQL y injecte ses propres lignes
+> d'activation de RLS, et cette réécriture casse les corps de fonction délimités
+> par des dollars (`unterminated dollar-quoted string`).
 > Tant qu'elle n'est pas jouée dans le SQL Editor, le multilingue, la longueur
 > cible, la date de publication et la boucle de refus sont inactifs — l'outil le
 > signale à l'écran et continue de fonctionner en français. Le fichier est
