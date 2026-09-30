@@ -1160,12 +1160,25 @@ export async function runDescriptionPhase(
       : "Non validées : le modèle en proposera de nouvelles avec le texte.",
   });
 
+  const sujets =
+    (row.target_length_source as { sujets?: { titre: string; pages: number }[] } | null)
+      ?.sujets ?? [];
+
   steps.push({
     label: "Longueur cible",
     status: row.target_length ? "ok" : "skipped",
     detail: row.target_length
       ? `${row.target_length.toLocaleString("fr-FR")} caractères, d'après le top 10`
       : "Non mesurée : fourchette générale de 4 000 à 7 000 caractères.",
+  });
+
+  steps.push({
+    label: "Socle de sujets",
+    status: sujets.length > 0 ? "ok" : "skipped",
+    detail:
+      sujets.length > 0
+        ? `${sujets.length} sujet(s) relevé(s) chez les concurrents, passés à la rédaction`
+        : "Aucun sujet relevé : mesure la longueur cible pour les obtenir.",
   });
 
   /* --- rédaction -------------------------------------------------------- */
@@ -1218,6 +1231,9 @@ export async function runDescriptionPhase(
       takenAngles,
       locale,
       targetLength: row.target_length,
+      competitorTopics:
+        (row.target_length_source as { sujets?: { titre: string; pages: number }[] } | null)
+          ?.sujets ?? [],
       approvedMetadata: approved,
       rejectionReasons,
     });

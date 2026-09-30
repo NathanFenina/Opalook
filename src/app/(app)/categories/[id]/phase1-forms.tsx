@@ -395,6 +395,28 @@ export function TargetLengthForm({
         <Notice status={state.status}>{state.message}</Notice>
       </form>
 
+      {mesure && mesure.sujets && mesure.sujets.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-xs font-medium text-muted-foreground">
+            Ce que traite le top 10 — le socle que la rédaction doit couvrir
+          </p>
+          <ul className="space-y-0.5 text-xs">
+            {mesure.sujets.map((sujet) => (
+              <li key={sujet.titre} className="flex gap-2">
+                <span className="w-10 shrink-0 text-right tabular-nums text-muted-foreground/70">
+                  {sujet.pages}/10
+                </span>
+                <span className="min-w-0">{sujet.titre}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="text-muted-foreground/80 text-xs">
+            Relevé sur les intertitres des pages classées. Ces sujets sont passés à la
+            rédaction, à couvrir dans l&apos;angle de la catégorie — pas à recopier.
+          </p>
+        </div>
+      )}
+
       {mesure && (
         <div className="space-y-2">
           <ol className="space-y-1 text-xs">

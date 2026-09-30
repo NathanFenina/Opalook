@@ -49,7 +49,16 @@ export type PageMeasure = {
   url: string;
   /** Caractères de prose relevés, ou null si la page n'a pas pu être lue. */
   length: number | null;
+  /** Intertitres de la page : ce qu'elle a jugé utile de traiter. */
+  headings: string[];
   raison?: string;
+};
+
+/** Un sujet traité par plusieurs pages du top 10. */
+export type Sujet = {
+  titre: string;
+  /** Sur combien des pages lues il revient. */
+  pages: number;
 };
 
 export type TargetLength = {
@@ -61,18 +70,41 @@ export type TargetLength = {
   /** Nombre de pages effectivement lues. */
   mesurees: number;
   pages: PageMeasure[];
+  /**
+   * Ce que traitent les pages classées, par fréquence décroissante.
+   *
+   * La longueur dit combien écrire, pas quoi écrire. Un sujet que six des dix
+   * premiers abordent est un sujet que Google associe à cette requête : ne pas
+   * le traiter, c'est accepter un désavantage qu'aucune qualité d'écriture ne
+   * compense.
+   */
+  sujets: Sujet[];
   measuredAt: string;
   /** Ce que la mesure ne garantit pas, à afficher tel quel. */
   reserve: string;
 };
 
-/** Longueur de prose d'un document HTML. */
-export function proseLength(html: string): number {
+/**
+ * Longueur de prose et intertitres d'un document HTML.
+ *
+ * Les deux sortent de la même lecture parce qu'ils sortent du même nettoyage :
+ * relire la page une seconde fois pour ses titres coûterait un aller-retour de
+ * plus vers un site qu'on n'a pas à solliciter deux fois.
+ */
+export function readPage(html: string): { length: number; headings: string[] } {
   const $ = cheerio.load(html);
 
   // Ces blocs sont présents sur toutes les pages du site : les compter
   // mesurerait le gabarit, pas le contenu.
   $("script, style, noscript, nav, header, footer, aside, form, select, template").remove();
+
+  const headings: string[] = [];
+  $("h2, h3").each((_, element) => {
+    const texte = $(element).text().replace(/\s+/g, " ").trim();
+    // Un intertitre d'une page catégorie fait quelques mots. En dessous c'est
+    // une étiquette de filtre, au-dessus c'est un paragraphe mal balisé.
+    if (texte.length >= 8 && texte.length <= 120) headings.push(texte);
+  });
 
   let total = 0;
 
@@ -88,7 +120,12 @@ export function proseLength(html: string): number {
     if (isHeading || text.length >= PROSE_MIN) total += text.length;
   });
 
-  return total;
+  return { length: total, headings: headings.slice(0, 25) };
+}
+
+/** Rétro-compatibilité : la seule longueur, pour qui n'a pas besoin du reste. */
+export function proseLength(html: string): number {
+  return readPage(html).length;
 }
 
 async function measureOne(result: {
@@ -96,7 +133,12 @@ async function measureOne(result: {
   url: string;
   domain: string;
 }): Promise<PageMeasure> {
-  const base = { rank: result.rank, domain: result.domain, url: result.url };
+  const base = {
+    rank: result.rank,
+    domain: result.domain,
+    url: result.url,
+    headings: [] as string[],
+  };
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -121,7 +163,8 @@ async function measureOne(result: {
       return { ...base, length: null, raison: `type ${type || "inconnu"}` };
     }
 
-    return { ...base, length: proseLength(await response.text()) };
+    const { length, headings } = readPage(await response.text());
+    return { ...base, length, headings };
   } catch (error) {
     const message = (error as Error).name === "AbortError"
       ? "délai dépassé"
@@ -130,6 +173,89 @@ async function measureOne(result: {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Neutralise la forme d'un intertitre pour reconnaître le même sujet ailleurs. */
+function sujetKey(titre: string): string {
+  return titre
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/**
+ * Les sujets que plusieurs pages du top 10 traitent.
+ *
+ * Le rapprochement se fait sur les mots pleins communs plutôt que sur le titre
+ * entier : « Comment choisir son collier d'ambre » et « Choisir un collier
+ * d'ambre » sont le même sujet, et les compter séparément reviendrait à
+ * conclure qu'aucun ne revient.
+ */
+function sujetsCommuns(pages: PageMeasure[]): Sujet[] {
+  const VIDES = new Set([
+    "le", "la", "les", "un", "une", "des", "du", "de", "au", "aux", "et", "ou",
+    "en", "a", "pour", "par", "sur", "avec", "son", "sa", "ses", "nos", "notre",
+    "quel", "quelle", "comment", "pourquoi", "est", "sont", "the", "and", "of",
+    "for", "to", "your", "how", "what", "why", "is", "are",
+  ]);
+
+  /**
+   * Racine grossière d'un mot : ses cinq premières lettres.
+   *
+   * « Entretien de vos bijoux » et « Entretenir un bijou en ambre » sont le même
+   * sujet, et une comparaison sur les mots entiers les sépare — « entretien »
+   * n'est pas « entretenir », « bijoux » n'est pas « bijou ». Une vraie
+   * lemmatisation demanderait un dictionnaire par langue pour dix langues ;
+   * cinq lettres attrapent l'essentiel des flexions sans rien installer, au prix
+   * de quelques rapprochements abusifs sans conséquence ici — au pire deux
+   * sujets voisins sont comptés comme un.
+   */
+  const racine = (mot: string) => mot.slice(0, 5);
+
+  const mots = (titre: string) =>
+    new Set(
+      sujetKey(titre)
+        .split(" ")
+        .filter((mot) => mot.length > 2 && !VIDES.has(mot))
+        .map(racine),
+    );
+
+  type Groupe = { titre: string; mots: Set<string>; pages: Set<number> };
+  const groupes: Groupe[] = [];
+
+  for (const page of pages) {
+    // Un même intertitre répété sur une page ne compte qu'une fois pour elle.
+    const vusIci = new Set<Groupe>();
+
+    for (const titre of page.headings) {
+      const cles = mots(titre);
+      if (cles.size === 0) continue;
+
+      const existant = groupes.find((groupe) => {
+        const communs = [...cles].filter((mot) => groupe.mots.has(mot)).length;
+        return communs >= Math.min(2, Math.min(cles.size, groupe.mots.size));
+      });
+
+      if (existant) {
+        if (!vusIci.has(existant)) {
+          existant.pages.add(page.rank);
+          vusIci.add(existant);
+        }
+      } else {
+        const groupe = { titre, mots: cles, pages: new Set([page.rank]) };
+        groupes.push(groupe);
+        vusIci.add(groupe);
+      }
+    }
+  }
+
+  return groupes
+    .filter((groupe) => groupe.pages.size >= 2)
+    .map((groupe) => ({ titre: groupe.titre, pages: groupe.pages.size }))
+    .sort((a, b) => b.pages - a.pages)
+    .slice(0, 15);
 }
 
 function median(values: number[]): number | null {
@@ -186,10 +312,14 @@ export async function measureTargetLength(
     max: lengths.length > 0 ? Math.max(...lengths) : null,
     mesurees: lengths.length,
     pages: pages.sort((a, b) => a.rank - b.rank),
+    sujets: sujetsCommuns(pages),
     measuredAt: new Date().toISOString(),
     reserve:
       "Mesure des paragraphes et intertitres uniquement : les noms de produits, " +
       "menus et pieds de page sont exclus. Une page qui charge son texte en " +
-      "JavaScript est comptée à zéro et n'entre pas dans la médiane.",
+      "JavaScript est comptée à zéro et n'entre ni dans la médiane ni dans les " +
+      "sujets. Le rapprochement des sujets se fait sur les mots communs : il " +
+      "préfère séparer deux formulations voisines que fondre deux sujets " +
+      "distincts, donc les comptes sont un plancher, jamais un plafond.",
   };
 }

@@ -216,6 +216,11 @@ export type GenerationInput = {
     h1: string | null;
   } | null;
   /**
+   * Sujets que traitent plusieurs pages du top 10, relevés sur leurs
+   * intertitres. C'est le socle que Google associe à la requête.
+   */
+  competitorTopics?: { titre: string; pages: number }[];
+  /**
    * Raisons pour lesquelles les versions précédentes ont été refusées.
    * C'est la correction la plus rentable de tout le prompt : elle vient du
    * relecteur et porte sur ce texte-là.
@@ -531,7 +536,22 @@ ${facetLines}
 # Texte actuellement en ligne
 ${input.currentText ? input.currentText.slice(0, 2500) : "(aucun texte en place)"}
 
-# Classement organique actuel sur « ${input.keyword} »
+${
+    input.competitorTopics && input.competitorTopics.length > 0
+      ? `# Sujets réellement traités par le top 10 — le socle à couvrir
+Relevé sur les intertitres des pages classées. Un sujet que plusieurs d'entre
+elles abordent est un sujet que Google associe à cette requête : ne pas le
+traiter est un désavantage qu'aucune qualité d'écriture ne rattrape.
+
+Couvre ces sujets — dans TON angle éditorial, avec TES arguments, sans recopier
+leurs formulations — puis ajoute au moins un apport qu'aucun d'eux n'a. Si l'un
+d'eux ne s'applique pas à cette catégorie, ignore-le plutôt que de le remplir.
+
+${input.competitorTopics.map((sujet) => `- ${sujet.titre} (${sujet.pages} pages sur 10)`).join("\n")}
+
+`
+      : ""
+  }# Classement organique actuel sur « ${input.keyword} »
 ${
     input.serp.length > 0
       ? input.serp
