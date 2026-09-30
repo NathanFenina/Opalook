@@ -791,6 +791,15 @@ export const KeywordCandidatesSchema = z.object({
             "Le risque de chevauchement avec une autre catégorie du site, en " +
               "une phrase, ou « aucun »",
           ),
+        marketIntent: z
+          .string()
+          .describe(
+            "Qui tape cette requête, par rapport au marché du site. Exactement " +
+              "l'une de ces trois valeurs : « marché » si c'est le public visé " +
+              "par le site — un revendeur professionnel pour un site B2B, un " +
+              "client final pour un site B2C ; « hors marché » si c'est l'autre " +
+              "public ; « ambigu » si les deux la tapent",
+          ),
       }),
     )
     .describe(
@@ -846,10 +855,25 @@ INTERDITS
 - Aucune requête informationnelle (« qu'est-ce que », « comment fabriquer ») :
   la page est marchande.
 
+LE PUBLIC QUI TAPE LA REQUÊTE — CHAMP marketIntent
+C'est l'arbitrage le plus lourd de conséquences, et le volume seul y répond mal.
+Sur un site B2B, « collier ambre » a du volume mais est tapé par des
+particuliers : se positionner dessus attire des visiteurs qui n'achèteront
+jamais en gros, et si le même groupe exploite un site grand public, les deux
+pages se disputent la même requête. « grossiste bijoux ambre » a beaucoup moins
+de volume, parfois zéro mesuré, mais chaque visiteur est un acheteur possible.
+Un volume nul sur une requête du bon public n'est pas rédhibitoire : les outils
+mesurent mal les requêtes professionnelles rares, et une page bien placée sur
+une requête à trente recherches vaut mieux qu'une page invisible sur une requête
+à trois mille.
+
+Classe donc honnêtement chaque candidat, sans te laisser influencer par le
+volume que tu supposes : tu dis QUI tape la requête, pas combien ils sont.
+
 Tu proposes, tu ne tranches pas. Les volumes de recherche sont mesurés après
-toi, et c'est eux qui départageront. Propose donc large : un candidat évident
-mais saturé et un candidat plus précis mais accessible ont tous les deux leur
-place dans ta liste.`;
+toi, et c'est eux qui départageront, pondérés par ce que tu auras dit du public.
+Propose donc large : un candidat évident mais saturé et un candidat plus précis
+mais accessible ont tous les deux leur place dans ta liste.`;
 
 /**
  * Propose des candidats au mot-clé principal.

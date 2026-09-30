@@ -267,6 +267,8 @@ export type KeywordCandidate = {
   why: string;
   source: string;
   reservation: string;
+  /** Qui tape la requête, par rapport au marché du site : marché, hors marché, ambigu. */
+  marketIntent: string;
   volume: number | null;
   difficulty: number | null;
   cpc: number | null;
@@ -309,15 +311,57 @@ function scoreCandidate(input: {
   volume: number | null;
   difficulty: number | null;
   position: number | null;
+  marketIntent?: string;
+  market?: Market;
 }): { score: number; verdict: string } {
   const raisons: string[] = [];
   let score = 0;
+
+  // Le public d'abord, avant même le volume.
+  //
+  // C'est l'arbitrage qui décide si le site attire des acheteurs ou des
+  // curieux. Sur un site de gros, « collier ambre » a du volume et « grossiste
+  // bijoux ambre » n'en a presque pas — mais le premier amène des particuliers
+  // qui n'achèteront pas, et, quand le même groupe tient un site grand public,
+  // met les deux pages en concurrence sur la même requête. Le retrait est assez
+  // lourd pour qu'aucun volume ne le rattrape à lui seul, sans être éliminatoire :
+  // une requête grand public reste visible dans la liste, avec sa raison.
+  const horsMarche = input.marketIntent?.toLowerCase().includes("hors");
+  const ambigu = input.marketIntent?.toLowerCase().includes("ambig");
+
+  if (input.market && horsMarche) {
+    score -= 45;
+    raisons.push(
+      input.market === "b2b"
+        ? "requête de particulier sur un site de gros"
+        : "requête de professionnel sur un site grand public",
+    );
+  } else if (input.market && ambigu) {
+    score -= 10;
+    raisons.push("public ambigu");
+  } else if (input.market) {
+    // Et une prime, sans quoi une requête parfaitement ciblée mais que les
+    // outils mesurent à zéro finirait derrière une requête grand public qu'on
+    // vient pourtant d'écarter. Punir l'erreur ne suffit pas, il faut aussi
+    // reconnaître le bon choix.
+    score += 15;
+    raisons.push(
+      input.market === "b2b" ? "requête de revendeur" : "requête de client final",
+    );
+  }
 
   if (input.volume !== null && input.volume > 0) {
     score += Math.min(60, Math.round(Math.log10(input.volume + 1) * 20));
     raisons.push(`${input.volume.toLocaleString("fr-FR")} recherches/mois`);
   } else if (input.volume === 0) {
-    raisons.push("aucune recherche mesurée");
+    // Les outils mesurent mal les requêtes professionnelles rares. Un zéro sur
+    // une requête du bon public ne vaut pas condamnation : on ne récompense
+    // pas, on ne punit pas non plus.
+    raisons.push(
+      input.market && !horsMarche
+        ? "aucune recherche mesurée, ce qui est courant sur les requêtes professionnelles"
+        : "aucune recherche mesurée",
+    );
   } else {
     raisons.push("volume inconnu");
   }
@@ -421,6 +465,7 @@ async function rankCandidates(
       why: candidate.why,
       source: candidate.source,
       reservation: candidate.reservation,
+      marketIntent: candidate.marketIntent,
       volume: null,
       difficulty: null,
       cpc: null,
@@ -438,6 +483,8 @@ async function rankCandidates(
       why: "Requête déjà remontée par Search Console sur cette URL.",
       source: "Search Console",
       reservation: "aucun",
+      // Search Console dit qu'on reçoit des impressions, pas qui les envoie.
+      marketIntent: "ambigu",
       volume: null,
       difficulty: null,
       cpc: null,
@@ -454,6 +501,7 @@ async function rankCandidates(
       why: "Mot-clé actuellement retenu, pour comparaison.",
       source: "actuel",
       reservation: "aucun",
+      marketIntent: "ambigu",
       volume: null,
       difficulty: null,
       cpc: null,
@@ -514,8 +562,9 @@ async function rankCandidates(
     );
   }
 
+  const market = (project?.market ?? null) as Market;
   for (const candidate of candidates) {
-    const { score, verdict } = scoreCandidate(candidate);
+    const { score, verdict } = scoreCandidate({ ...candidate, market });
     candidate.score = score;
     candidate.verdict = verdict;
   }

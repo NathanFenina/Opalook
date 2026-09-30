@@ -146,12 +146,21 @@ export function KeywordProposal({
                       <span className="block text-xs text-muted-foreground">
                         {candidate.source} · {candidate.why}
                       </span>
+                      {candidate.marketIntent?.toLowerCase().includes("hors") && (
+                        <span className="block text-xs text-destructive">
+                          Public hors marché : cette requête n&apos;est pas tapée par les
+                          acheteurs du site.
+                        </span>
+                      )}
                       {candidate.reservation &&
                         candidate.reservation.toLowerCase() !== "aucun" && (
                           <span className="block text-xs text-amber-700 dark:text-amber-400">
                             Chevauchement : {candidate.reservation}
                           </span>
                         )}
+                      <span className="block text-xs text-muted-foreground/70">
+                        {candidate.verdict}
+                      </span>
                     </td>
                     <td className="px-3 py-2 text-right">
                       <Num value={candidate.volume} />
