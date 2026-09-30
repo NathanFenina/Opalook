@@ -13,6 +13,7 @@ import { useFormStatus } from "react-dom";
 
 import {
   rejectOptimization,
+  repairLatestVersion,
   runDescriptionPhase,
   setLocaleStatus,
   type DescriptionState,
@@ -98,6 +99,70 @@ export function DescriptionForm({
         label={hasVersion ? "Regénérer les descriptions" : "Rédiger les descriptions"}
         pendingLabel="Rédaction en cours, compter deux à trois minutes…"
       />
+
+      {state.status !== "idle" && (
+        <p
+          role="status"
+          className={`rounded-lg px-3 py-2 text-sm ${
+            state.status === "error"
+              ? "bg-destructive/10 text-destructive"
+              : "bg-muted text-slate-700 dark:text-slate-300"
+          }`}
+        >
+          {state.message}
+        </p>
+      )}
+
+      {state.steps && state.steps.length > 0 && (
+        <ul className="space-y-1 text-xs">
+          {state.steps.map((step, index) => (
+            <li key={`${step.label}-${index}`}>
+              <span className={`font-medium ${STEP_TONE[step.status]}`}>{step.label}</span>
+              <span className="text-muted-foreground"> — {step.detail}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </form>
+  );
+}
+
+/**
+ * Corrige la version affichée sur ses seuls points mesurés.
+ *
+ * C'est la réponse au « 77/100, qu'est-ce qui lui manque ? » : les points au
+ * rouge sont juste au-dessus, ce bouton les reprend. Il ne relance pas une
+ * rédaction complète — l'angle et les arguments sont conservés, seuls les
+ * écarts mesurés bougent — et le résultat arrive en nouvelle version, donc
+ * comparable à celle d'avant.
+ */
+export function RepairForm({
+  categoryId,
+  locale,
+  version,
+}: {
+  categoryId: string;
+  locale: string;
+  version: number;
+}) {
+  const [state, action] = useActionState(repairLatestVersion, DESCRIPTION_INITIAL);
+
+  return (
+    <form action={action} className="space-y-3">
+      <input type="hidden" name="category_id" value={categoryId} />
+      <input type="hidden" name="locale" value={locale} />
+
+      <div className="flex flex-wrap items-center gap-3">
+        <Submit
+          label={`Corriger les points rouges de la v${version}`}
+          pendingLabel="Correction en cours…"
+          variant="outline"
+        />
+        <span className="text-xs text-muted-foreground">
+          Reprend le texte existant, ne touche qu&apos;aux écarts mesurés, et archive une
+          nouvelle version.
+        </span>
+      </div>
 
       {state.status !== "idle" && (
         <p

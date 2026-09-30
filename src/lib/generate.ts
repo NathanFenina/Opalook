@@ -109,13 +109,16 @@ export const CategoryContentSchema = z.object({
     .string()
     .describe(
       "Meta description, 140 à 158 caractères espaces compris — jamais plus de 158, " +
-        "Google tronque au-delà",
+        "Google tronque au-delà. CONTIENT OBLIGATOIREMENT la forme exacte du mot-clé " +
+        "principal, mot pour mot et dans le même ordre : sans elle, Google ne met rien " +
+        "en gras dans le résultat et le taux de clic chute",
     ),
   h1: z
     .string()
     .describe(
-      "H1 de la page, 40 à 65 caractères espaces compris — jamais plus de 65, " +
-        "contient le mot-clé principal",
+      "H1 de la page, 40 à 65 caractères espaces compris — jamais plus de 65. " +
+        "CONTIENT OBLIGATOIREMENT la forme exacte du mot-clé principal, mot pour mot " +
+        "et dans le même ordre",
     ),
   shortDescription: z
     .array(z.string())
@@ -134,8 +137,9 @@ export const CategoryContentSchema = z.object({
   sections: z
     .array(SectionSchema)
     .describe(
-      "3 à 5 sections de la description LONGUE. Corps visé entre 4 000 et 7 000 " +
-        "caractères : assez pour couvrir le sujet, pas au point de noyer la page",
+      "3 à 5 sections de la description LONGUE. La longueur visée est donnée dans " +
+        "le message et prime sur toute autre indication : elle est mesurée sur les " +
+        "pages réellement classées. À défaut, viser 4 000 à 7 000 caractères",
     ),
   faq: z.array(FaqItemSchema).describe("2 à 4 questions fréquentes à intention transactionnelle"),
   editorialAngle: z.string().describe("L'angle éditorial retenu, repris de la liste imposée"),
@@ -345,7 +349,18 @@ STYLE
 Langue naturelle, phrases de longueur variable, pas de superlatifs creux ("le
 meilleur", "incontournable", "révolutionnaire"), pas de formules d'IA ("plongez
 dans l'univers", "que vous soyez…"). Écris comme un professionnel du secteur qui
-s'adresse à un acheteur pressé.`;
+s'adresse à un acheteur pressé.
+
+CONTRÔLE AVANT DE RENDRE — À FAIRE VRAIMENT
+Ces points sont vérifiés mécaniquement après toi, et chacun qui tombe est un
+aller-retour de plus. Relis-toi et compte :
+1. La forme exacte du mot-clé est-elle dans le title ? dans le H1 ? dans la META
+   DESCRIPTION ? Les trois, pas deux sur trois.
+2. Le title fait-il entre 45 et 60 caractères ? La meta entre 140 et 158 ? Le H1
+   entre 20 et 70 ? Compte les caractères, ne les estime pas.
+3. La forme exacte apparaît-elle entre 4 et 8 fois dans le corps ?
+4. La description longue est-elle à la longueur visée, à 15 % près ?
+Si l'un de ces points ne passe pas, corrige AVANT de rendre ta réponse.`;
 
 function bulletList(items: string[], max: number): string {
   return items.slice(0, max).map((item) => `- ${item}`).join("\n") || "- (aucun)";
@@ -646,6 +661,107 @@ export async function checkAnthropicKey(): Promise<KeyCheck> {
       };
     }
     return { ok: false, raison: (error as Error).message };
+  }
+}
+
+/* ------------------------------------------ passe de correction ---------- */
+
+const REPAIR_SYSTEM = `Tu corriges un texte de page catégorie déjà rédigé, sur des
+points précis et mesurés. Ce n'est pas une réécriture.
+
+CE QU'ON ATTEND DE TOI
+- Tu reçois le texte complet et la liste des écarts constatés, chacun avec sa
+  consigne. Tu corriges CES écarts, et seulement eux.
+- Tout le reste — l'angle éditorial, le plan, les arguments, le ton, les entités
+  citées — reste identique. Un paragraphe qui n'est visé par aucune consigne
+  revient mot pour mot dans ta réponse.
+- Tu rends l'objet complet, y compris les parties inchangées.
+
+CE QU'IL NE FAUT SURTOUT PAS FAIRE
+- Ne compense pas un raccourcissement en supprimant une section entière : retire
+  les redites et les passages qui n'aident pas à choisir, garde ce qui informe.
+- Ne perds pas le mot-clé en réécrivant. C'est l'erreur la plus fréquente d'une
+  passe de correction, et elle annule le bénéfice de la correction.
+- N'ajoute aucune caractéristique, prix, délai ou engagement qui n'était pas
+  déjà dans le texte d'origine.
+
+Après ta correction, recompte : longueurs en caractères, occurrences de la forme
+exacte. Les consignes donnent des nombres, ils sont à respecter.`;
+
+/**
+ * Corrige une version sur les écarts mesurés.
+ *
+ * Elle existe parce que la question du client est juste : pourquoi livrer un
+ * texte dont on sait déjà qu'il a un contrôle au rouge ? Le barème est
+ * déterministe, donc les écarts sont connus à la seconde où le texte est rendu.
+ * Les faire corriger coûte un appel de plus ; les laisser coûte une relecture
+ * humaine sur cent quatre-vingts pages.
+ *
+ * Elle ne juge pas le fond. Un texte creux repassera vert sans être meilleur —
+ * c'est le refus motivé qui sert à ça, pas cette fonction.
+ */
+export async function repairCategoryContent(args: {
+  content: CategoryContent;
+  keyword: string;
+  locale: string;
+  defects: string;
+  targetLength: number | null;
+  businessRules: string | null;
+}): Promise<CategoryContent> {
+  const apiKey = anthropicApiKey();
+  if (!apiKey) throw new GenerationError(MISSING_KEY_MESSAGE, "no_key");
+
+  const langue = localeInfo(args.locale);
+  const client = new Anthropic({ apiKey });
+
+  const prompt = `# Langue
+${langue.label} (${langue.code}). Le texte corrigé reste dans cette langue.
+
+# Mot-clé principal
+${args.keyword}
+
+Sa FORME EXACTE, mot pour mot et dans le même ordre, est ce qui est vérifié.
+« grossiste en bijoux » n'est pas la forme exacte de « grossiste bijoux » : un
+mot inséré casse la correspondance.
+
+${args.targetLength ? `# Longueur visée pour la description longue\n${args.targetLength} caractères, à ±15 %.\n` : ""}
+# Règles métier du site — toujours applicables
+${args.businessRules?.trim()?.slice(0, 6000) || "(aucune)"}
+
+# Écarts constatés, à corriger
+${args.defects}
+
+# Texte actuel, à corriger sans le réécrire
+${JSON.stringify(args.content, null, 2)}
+
+Rends l'objet complet corrigé.`;
+
+  try {
+    const response = await client.messages.parse({
+      model: GENERATION_MODEL,
+      max_tokens: 16000,
+      thinking: { type: "adaptive" },
+      output_config: {
+        effort: "medium",
+        format: zodOutputFormat(CategoryContentSchema),
+      },
+      system: REPAIR_SYSTEM,
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    if (!response.parsed_output) {
+      throw new GenerationError("La passe de correction n'a rien renvoyé.", "empty");
+    }
+    return response.parsed_output;
+  } catch (error) {
+    if (error instanceof GenerationError) throw error;
+    if (error instanceof Anthropic.APIError) {
+      throw new GenerationError(
+        `Erreur API Anthropic (${error.status}) : ${error.message}`,
+        "api",
+      );
+    }
+    throw new GenerationError((error as Error).message, "api");
   }
 }
 

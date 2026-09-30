@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useState } from "react";
 import { useFormStatus } from "react-dom";
 
 import {
@@ -164,26 +164,63 @@ const CATALOGUE_INITIAL: CatalogueImportState = { status: "idle", message: "" };
  * pas savoir qu'une catégorie a une mère et des sœurs, et donc pas différencier
  * son texte de celui des catégories voisines — ce que la règle métier exige.
  */
+/**
+ * Plafond du corps d'une requête, réglé dans `next.config.ts`.
+ *
+ * Au-delà, la requête est refusée AVANT d'entrer dans le code : l'action ne
+ * s'exécute pas, ne renvoie pas d'état, et l'écran affiche une erreur serveur
+ * sans rien dire d'utile. C'est ce qui est arrivé sur le catalogue de 2,3 Mo.
+ * Le seul endroit où l'on peut encore prévenir, c'est ici, avant l'envoi.
+ */
+const TAILLE_MAX = 4 * 1024 * 1024;
+
 export function ImportCatalogueForm({ projectId }: { projectId: string }) {
   const [state, formAction] = useActionState(importCatalogue, CATALOGUE_INITIAL);
+  const [tropGros, setTropGros] = useState<string | null>(null);
+  const [poids, setPoids] = useState<string | null>(null);
 
   return (
     <form action={formAction} className="space-y-4">
       <input type="hidden" name="project_id" value={projectId} />
       <Field
         label="Fichier catalogue"
-        hint="Export PrestaShop : id_category, id_parent, products_count, puis name_xx, url_xx, description_xx, additional_description_xx par langue."
+        hint="Export PrestaShop : id_category, id_parent, products_count, puis name_xx, link_rewrite_xx, url_xx, description_xx, additional_description_xx par langue. Toutes les langues du fichier sont lues en une passe."
       >
         <Input
           type="file"
           name="file"
           accept=".csv,text/csv,text/plain"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (!file) {
+              setTropGros(null);
+              setPoids(null);
+              return;
+            }
+            const mo = (file.size / 1024 / 1024).toFixed(2);
+            setPoids(`${mo} Mo`);
+            setTropGros(
+              file.size > TAILLE_MAX
+                ? `Ce fichier fait ${mo} Mo, au-delà des 4 Mo qu'accepte le serveur. ` +
+                    `Retire les langues que le site ne publie pas, ou coupe le fichier en deux ` +
+                    `moitiés de catégories : les deux imports se complètent sans s'écraser.`
+                : null,
+            );
+          }}
           className="file:mr-3 file:rounded file:border-0 file:bg-slate-200 file:px-3 file:py-1 file:text-xs dark:file:bg-slate-800 dark:file:text-slate-200"
         />
       </Field>
+      {poids && !tropGros && (
+        <p className="text-xs text-muted-foreground">Fichier de {poids}, dans les limites.</p>
+      )}
+      {tropGros && (
+        <p role="alert" className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {tropGros}
+        </p>
+      )}
       <Field
-        label="Langue à importer"
-        hint="Vide = la première langue du fichier. Les autres langues restent dans le fichier et pourront être importées plus tard."
+        label="Langue de référence"
+        hint="Celle dont l'URL sert de clé, et sur laquelle travaillent les écrans existants. Vide = français, ou la première langue du fichier si le français en est absent."
       >
         <Input name="locale" placeholder="fr" className="max-w-24" />
       </Field>

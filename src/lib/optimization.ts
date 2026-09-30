@@ -264,6 +264,12 @@ export async function persistOptimization(
     groundedInPage: boolean;
     /** Longueur visée, pour juger l'écart plutôt que de le découvrir. */
     targetLength?: number | null;
+    /**
+     * Quel bouton a produit cette version. Sans ça, deux versions de la même
+     * catégorie sont indiscernables à l'écran, et on ne sait plus laquelle
+     * vient du traitement en un clic et laquelle vient des deux phases.
+     */
+    source?: "phases" | "traitement complet" | "correction";
     steps?: PipelineStep[];
   },
 ): Promise<{
@@ -330,6 +336,7 @@ export async function persistOptimization(
       compliance,
       similarity,
       locale: args.locale,
+      source: args.source ?? "phases",
       targetLength: args.targetLength ?? null,
       longueur: longText.length,
       complianceChecked: args.locale === DEFAULT_LOCALE,

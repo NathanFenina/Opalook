@@ -211,6 +211,7 @@ export async function runMoulinette(
     content,
     userId: user.id,
     groundedInPage: (source.products?.length ?? 0) > 0,
+    source: "traitement complet",
   });
 
   if (insertError) {
@@ -1468,6 +1469,7 @@ export async function runPipeline(
     content,
     userId: user.id,
     groundedInPage: (source.products?.length ?? 0) > 0,
+    source: "traitement complet",
     steps,
   });
 

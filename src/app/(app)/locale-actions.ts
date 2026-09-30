@@ -31,9 +31,12 @@ import {
   generateCategoryContent,
   generateMetadata,
   proposeKeywordCandidates,
+  repairCategoryContent,
   GenerationError,
   GENERATION_MODEL,
+  type CategoryContent,
 } from "@/lib/generate";
+import { describeDefects, defectsSummary, findDefects, pickBest } from "@/lib/repair";
 import type { Market } from "@/lib/compliance";
 import { DEFAULT_LOCALE, localeInfo, localeLabel } from "@/lib/locales";
 import {
@@ -341,25 +344,17 @@ function scoreCandidate(input: {
 }
 
 /**
- * Propose le mot-clé principal à partir des données, et non du flair.
+ * Construit et classe la liste des candidats.
  *
- * Trois sources se rejoignent : ce que Search Console dit que la page reçoit
- * déjà, ce que le modèle déduit du catalogue, et ce que le nom de la catégorie
- * suggère. Les volumes sont ensuite mesurés pour de vrai sur le marché de la
- * langue — un seul appel DataForSEO pour toute la liste, parce que la
- * facturation est à la tâche et qu'il serait absurde de mesurer un candidat à la
- * fois.
- *
- * Rien n'est appliqué : la proposition se lit, puis se choisit d'un clic.
+ * Extrait de l'action parce que deux usages en ont besoin : la proposition à
+ * l'écran, où l'on choisit, et le traitement en série sur dix langues, où l'on
+ * ne peut pas choisir dix fois. Le classement est le même dans les deux cas —
+ * ce serait malhonnête que le mot-clé retenu automatiquement ne soit pas celui
+ * que l'écran aurait recommandé.
  */
-export async function proposeKeyword(
-  _prev: KeywordProposalState,
-  formData: FormData,
-): Promise<KeywordProposalState> {
-  const loaded = await loadContext(formData);
-  if (loaded.erreur !== undefined) return { status: "error", message: loaded.erreur };
-  const ctx = loaded.ctx;
-
+async function rankCandidates(
+  ctx: LoadedContext,
+): Promise<{ candidates: KeywordCandidate[]; avertissements: string[]; erreur?: string }> {
   const { supabase, category, project, locale, row } = ctx;
   const avertissements: string[] = [];
 
@@ -401,7 +396,7 @@ export async function proposeKeyword(
     });
   } catch (error) {
     const message = error instanceof GenerationError ? error.message : (error as Error).message;
-    return { status: "error", message, locale };
+    return { candidates: [], avertissements, erreur: message };
   }
 
   /* --- la demande constatée entre dans la liste, elle ne s'y ajoute pas --- */
@@ -488,9 +483,9 @@ export async function proposeKeyword(
   const candidates = [...byKeyword.values()];
   if (candidates.length === 0) {
     return {
-      status: "error",
-      message: "Aucun candidat exploitable : tout ce qui a été proposé est déjà attribué ailleurs.",
-      locale,
+      candidates: [],
+      avertissements,
+      erreur: "Aucun candidat exploitable : tout ce qui a été proposé est déjà attribué ailleurs.",
     };
   }
 
@@ -526,7 +521,33 @@ export async function proposeKeyword(
   }
   candidates.sort((a, b) => b.score - a.score);
 
-  const marche = localeInfo(locale);
+  return { candidates, avertissements: avertissements.filter(Boolean) };
+}
+
+/**
+ * Propose le mot-clé principal à partir des données, et non du flair.
+ *
+ * Trois sources se rejoignent : ce que Search Console dit que la page reçoit
+ * déjà, ce que le modèle déduit du catalogue, et ce que le nom de la catégorie
+ * suggère. Les volumes sont ensuite mesurés pour de vrai sur le marché de la
+ * langue — un seul appel DataForSEO pour toute la liste, parce que la
+ * facturation est à la tâche et qu'il serait absurde de mesurer un candidat à la
+ * fois.
+ *
+ * Rien n'est appliqué : la proposition se lit, puis se choisit d'un clic.
+ */
+export async function proposeKeyword(
+  _prev: KeywordProposalState,
+  formData: FormData,
+): Promise<KeywordProposalState> {
+  const loaded = await loadContext(formData);
+  if (loaded.erreur !== undefined) return { status: "error", message: loaded.erreur };
+  const ctx = loaded.ctx;
+
+  const { candidates, avertissements, erreur } = await rankCandidates(ctx);
+  if (erreur) return { status: "error", message: erreur, locale: ctx.locale };
+
+  const marche = localeInfo(ctx.locale);
 
   return {
     status: "ok",
@@ -538,9 +559,9 @@ export async function proposeKeyword(
         : " Attention : cette langue n'est pas au registre, les volumes ont été " +
           "mesurés en France par défaut.") +
       " Rien n'est enregistré avant ton clic.",
-    locale,
+    locale: ctx.locale,
     candidates: candidates.slice(0, 20),
-    avertissements: avertissements.filter(Boolean),
+    avertissements,
   };
 }
 
@@ -607,6 +628,86 @@ export async function applyKeyword(formData: FormData) {
 
   revalidatePath(`/categories/${category.id}`);
   revalidatePath(`/projects/${category.project_id}`);
+}
+
+/**
+ * Retient automatiquement le meilleur candidat, pour le traitement en série.
+ *
+ * Choisir à la main est la bonne façon de faire sur une langue. Sur dix, c'est
+ * dix arbitrages sur des marchés qu'on ne connaît pas, et le classement est
+ * précisément là pour ça. Le mot-clé retenu est celui que l'écran aurait
+ * recommandé en tête — pas un autre.
+ *
+ * Un mot-clé déjà renseigné n'est jamais remplacé : le traitement en série ne
+ * doit pas défaire un choix humain, et il doit pouvoir être relancé sans coût.
+ */
+export async function bulkPickKeyword(
+  _prev: KeywordProposalState,
+  formData: FormData,
+): Promise<KeywordProposalState> {
+  const loaded = await loadContext(formData);
+  if (loaded.erreur !== undefined) return { status: "error", message: loaded.erreur };
+  const ctx = loaded.ctx;
+
+  const { supabase, category, locale, row } = ctx;
+
+  if (row.target_keyword) {
+    return {
+      status: "ok",
+      message: `Mot-clé déjà retenu : « ${row.target_keyword} ». Inchangé.`,
+      locale,
+    };
+  }
+
+  const { candidates, avertissements, erreur } = await rankCandidates(ctx);
+  if (erreur) return { status: "error", message: erreur, locale };
+
+  const meilleur = candidates[0];
+  if (!meilleur) {
+    return { status: "error", message: "Aucun candidat exploitable.", locale };
+  }
+
+  const fields = {
+    target_keyword: meilleur.keyword,
+    keyword_volume: meilleur.volume,
+    keyword_difficulty: meilleur.difficulty,
+    keyword_data_at: new Date().toISOString(),
+  };
+
+  const { error } = await supabase
+    .from("category_locales")
+    .update(fields)
+    .eq("category_id", category.id)
+    .eq("locale", locale);
+
+  if (error) {
+    return {
+      status: "error",
+      message:
+        error.code === "23505"
+          ? `« ${meilleur.keyword} » est déjà pris par une autre catégorie en ${localeLabel(locale)}.`
+          : `Enregistrement impossible : ${error.message}`,
+      locale,
+    };
+  }
+
+  if (locale === DEFAULT_LOCALE) {
+    await supabase.from("categories").update(fields).eq("id", category.id);
+  }
+
+  revalidatePath(`/categories/${category.id}`);
+
+  return {
+    status: "ok",
+    message:
+      `« ${meilleur.keyword} » retenu` +
+      (meilleur.volume !== null ? ` — ${meilleur.volume.toLocaleString("fr-FR")} recherches/mois` : "") +
+      (meilleur.difficulty !== null ? `, difficulté ${meilleur.difficulty}` : "") +
+      `. ${meilleur.verdict}`,
+    locale,
+    candidates: candidates.slice(0, 5),
+    avertissements,
+  };
 }
 
 /* ============================ 2. phase 1 : balises et segment d'URL ====== */
@@ -989,15 +1090,24 @@ export async function runDescriptionPhase(
 
   /* --- les balises validées -------------------------------------------- */
 
-  const approved = row.metadata_approved
-    ? { title: row.title, metaDescription: row.meta_description, h1: row.h1 }
-    : null;
+  // Les balises validées à la main priment toujours. Le traitement en série
+  // vient d'en produire sans qu'on ait pu les relire : il demande explicitement
+  // à les réutiliser, sinon la rédaction en inventerait d'autres et les deux
+  // jeux divergeraient sur la même page.
+  const forceMetadata = formData.get("use_metadata") !== null;
+  const hasMetadata = Boolean(row.title || row.meta_description || row.h1);
+  const approved =
+    (row.metadata_approved || forceMetadata) && hasMetadata
+      ? { title: row.title, metaDescription: row.meta_description, h1: row.h1 }
+      : null;
 
   steps.push({
     label: "Balises",
     status: approved ? "ok" : "skipped",
     detail: approved
-      ? "Reprises telles quelles : elles ont été validées en phase 1."
+      ? row.metadata_approved
+        ? "Reprises telles quelles : elles ont été validées en phase 1."
+        : "Reprises de la phase 1, mais PAS encore validées à la main — à relire avant publication."
       : "Non validées : le modèle en proposera de nouvelles avec le texte.",
   });
 
@@ -1031,7 +1141,7 @@ export async function runDescriptionPhase(
         ? (category.fan_queries ?? [])
         : [];
 
-  let content;
+  let content: CategoryContent;
   try {
     content = await generateCategoryContent({
       brand: project?.name ?? "",
@@ -1082,6 +1192,66 @@ export async function runDescriptionPhase(
     detail: `Angle « ${content.editorialAngle} » · deux descriptions en ${localeLabel(locale)}`,
   });
 
+  /* --- correction automatique des écarts mesurés ------------------------ */
+  //
+  // Le barème est déterministe : à la seconde où le texte est rendu, on sait
+  // déjà quels contrôles sont au rouge. Livrer sans corriger reviendrait à
+  // demander une relecture humaine sur cent quatre-vingts pages pour des écarts
+  // que la machine sait constater elle-même.
+
+  const avant = findDefects(content, keyword, row.target_length);
+  let apres = avant;
+
+  if (avant.length > 0) {
+    try {
+      const corrected = await repairCategoryContent({
+        content,
+        keyword,
+        locale,
+        defects: describeDefects(avant),
+        targetLength: row.target_length,
+        businessRules: project?.business_rules ?? null,
+      });
+
+      // Les balises approuvées restent intouchables, même par la correction.
+      if (approved) {
+        if (approved.title) corrected.title = approved.title;
+        if (approved.metaDescription) corrected.metaDescription = approved.metaDescription;
+        if (approved.h1) corrected.h1 = approved.h1;
+      }
+
+      const best = pickBest(
+        { content, defects: avant },
+        { content: corrected, defects: findDefects(corrected, keyword, row.target_length) },
+      );
+      content = best.content;
+      apres = best.defects;
+
+      steps.push({
+        label: "Correction automatique",
+        status: apres.length === 0 ? "ok" : "skipped",
+        detail:
+          `${avant.length} écart(s) constaté(s), version ${best.retenue} retenue` +
+          (apres.length > 0
+            ? ` · reste : ${apres.map((defect) => defect.constat).join(" · ")}`
+            : " · tout au vert"),
+      });
+    } catch (error) {
+      const message = error instanceof GenerationError ? error.message : (error as Error).message;
+      steps.push({
+        label: "Correction automatique",
+        status: "error",
+        detail: `${message} La version est conservée telle quelle, avec ses ${avant.length} écart(s).`,
+      });
+    }
+  } else {
+    steps.push({
+      label: "Correction automatique",
+      status: "ok",
+      detail: "Aucun écart à corriger, tout est au vert dès la première passe.",
+    });
+  }
+
   const {
     score,
     compliance,
@@ -1101,6 +1271,7 @@ export async function runDescriptionPhase(
     userId: user.id,
     groundedInPage: (source.products?.length ?? 0) > 0,
     targetLength: row.target_length,
+    source: "phases",
     steps,
   });
 
@@ -1126,9 +1297,154 @@ export async function runDescriptionPhase(
     message:
       `Texte généré en ${localeLabel(locale)}, score ${score}/100.` +
       lengthSummary(longueur, row.target_length) +
+      defectsSummary(avant, apres) +
       (locale === DEFAULT_LOCALE
         ? complianceSummary(compliance)
         : " Règles métier : contrôle automatique réservé au français, à relire à l'œil.") +
+      similaritySummary(similarity),
+    locale,
+    steps,
+    score,
+  };
+}
+
+/**
+ * Corrige la dernière version sur ses écarts mesurés, sans tout réécrire.
+ *
+ * « Un contenu à 77/100, qu'est-ce qui lui manque et comment le relancer ? » —
+ * la liste des contrôles répond à la première moitié depuis le début, celle-ci
+ * répond à la seconde. Elle ne relance pas une rédaction complète : elle reprend
+ * le texte existant et ne touche qu'aux points au rouge, ce qui préserve l'angle
+ * et les arguments qu'on avait jugés bons.
+ *
+ * Le résultat est archivé en nouvelle version, jamais en écrasement : on doit
+ * pouvoir comparer, et revenir en arrière si la correction a fait pire.
+ */
+export async function repairLatestVersion(
+  _prev: DescriptionState,
+  formData: FormData,
+): Promise<DescriptionState> {
+  const loaded = await loadContext(formData);
+  if (loaded.erreur !== undefined) return { status: "error", message: loaded.erreur };
+  const ctx = loaded.ctx;
+
+  const { supabase, user, category, project, locale, row } = ctx;
+  const steps: PipelineStep[] = [];
+
+  const keyword = (row.target_keyword ?? "").trim();
+  if (!keyword) {
+    return { status: "error", message: "Pas de mot-clé principal : rien à mesurer.", locale };
+  }
+
+  const { data: latest } = await supabase
+    .from("optimizations")
+    .select("id, version, payload")
+    .eq("category_id", category.id)
+    .eq("locale", locale)
+    .order("version", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const structured = (latest?.payload as { structured?: CategoryContent } | null)?.structured;
+  if (!structured) {
+    return {
+      status: "error",
+      message:
+        "Aucune version à corriger dans cette langue. Les versions antérieures à la " +
+        "refonte n'ont pas conservé leur structure détaillée : pour celles-là, il faut " +
+        "relancer une rédaction complète.",
+      locale,
+    };
+  }
+
+  const avant = findDefects(structured, keyword, row.target_length);
+  if (avant.length === 0) {
+    return {
+      status: "ok",
+      message: `La version ${latest?.version} n'a aucun écart mesurable. Ce qui lui manque pour monter relève du fond, pas du barème — c'est le refus motivé qui sert à ça.`,
+      locale,
+    };
+  }
+
+  let corrected: CategoryContent;
+  try {
+    corrected = await repairCategoryContent({
+      content: structured,
+      keyword,
+      locale,
+      defects: describeDefects(avant),
+      targetLength: row.target_length,
+      businessRules: project?.business_rules ?? null,
+    });
+  } catch (error) {
+    const message = error instanceof GenerationError ? error.message : (error as Error).message;
+    return { status: "error", message, locale };
+  }
+
+  if (row.metadata_approved) {
+    if (row.title) corrected.title = row.title;
+    if (row.meta_description) corrected.metaDescription = row.meta_description;
+    if (row.h1) corrected.h1 = row.h1;
+  }
+
+  const best = pickBest(
+    { content: structured, defects: avant },
+    { content: corrected, defects: findDefects(corrected, keyword, row.target_length) },
+  );
+
+  if (best.retenue === "originale") {
+    return {
+      status: "error",
+      message:
+        `La correction a produit un texte moins conforme que l'original (${best.defects.length} ` +
+        `écart(s) contre ${avant.length}). Rien n'a été enregistré. Relance, ou refuse la ` +
+        `version avec une raison précise — c'est plus efficace qu'une correction mécanique ` +
+        `quand le problème est ailleurs.`,
+      locale,
+    };
+  }
+
+  steps.push({
+    label: "Correction",
+    status: "ok",
+    detail: avant.map((defect) => defect.constat).join(" · "),
+  });
+
+  const {
+    score,
+    similarity,
+    longueur,
+    error: insertError,
+  } = await persistOptimization(supabase, {
+    categoryId: category.id,
+    categoryName: row.name || category.name,
+    projectId: category.project_id,
+    externalId: category.external_id,
+    parentExternalId: category.parent_external_id,
+    locale,
+    keyword,
+    market: (project?.market ?? null) as Market,
+    content: best.content,
+    userId: user.id,
+    groundedInPage:
+      ((category.source_data as { products?: string[] } | null)?.products?.length ?? 0) > 0,
+    targetLength: row.target_length,
+    source: "correction",
+    steps,
+  });
+
+  if (insertError) {
+    return { status: "error", message: `Enregistrement impossible : ${insertError}`, locale, steps };
+  }
+
+  revalidatePath(`/categories/${category.id}`);
+
+  return {
+    status: "ok",
+    message:
+      `Version corrigée à partir de la v${latest?.version}, score ${score}/100.` +
+      lengthSummary(longueur, row.target_length) +
+      defectsSummary(avant, best.defects) +
       similaritySummary(similarity),
     locale,
     steps,

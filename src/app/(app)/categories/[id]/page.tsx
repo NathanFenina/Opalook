@@ -26,7 +26,13 @@ import { CopyButton } from "./copy-button";
 import { KeywordsForm, type GscQuery } from "./keywords-form";
 import { SerpForm } from "./serp-form";
 import { KeywordProposal, MetadataForm, TargetLengthForm } from "./phase1-forms";
-import { DescriptionForm, LocaleStatusSelect, RejectForm } from "./phase2-forms";
+import {
+  DescriptionForm,
+  LocaleStatusSelect,
+  RejectForm,
+  RepairForm,
+} from "./phase2-forms";
+import { AllLocalesRunner, type LocaleEtat } from "./all-locales";
 import { Button } from "@/components/ui/button";
 
 // La rédaction par Claude prend nettement plus que la durée par défaut d'une
@@ -360,6 +366,29 @@ export default async function CategoryPage({
   const optimizations = localeOptimizations ?? fallbackOptimizations ?? [];
   const latest = optimizations[0];
 
+  // La dernière version de CHAQUE langue, pour la vue d'ensemble. Une requête de
+  // plus, mais c'est elle qui rend le multilingue lisible d'un coup d'œil au
+  // lieu d'obliger à cliquer sur dix onglets.
+  const { data: toutesVersions } = await supabase
+    .from("optimizations")
+    .select("id, locale, version, score, payload, created_at, rejection_reason")
+    .eq("category_id", id)
+    .order("version", { ascending: false });
+
+  type Version = NonNullable<typeof toutesVersions>[number];
+  const derniereParLangue = new Map<string, Version>();
+  for (const version of toutesVersions ?? []) {
+    const code = (version.locale as string) ?? DEFAULT_LOCALE;
+    if (!derniereParLangue.has(code)) derniereParLangue.set(code, version);
+  }
+
+  const etats: LocaleEtat[] = ordered.map((row) => ({
+    locale: row.locale,
+    aMotCle: Boolean(row.target_keyword),
+    aLongueur: Boolean(row.target_length),
+    aVersion: derniereParLangue.has(row.locale),
+  }));
+
   const payload = (latest?.payload ?? {}) as {
     groundedInPage?: boolean;
     compliance?: ComplianceReport;
@@ -499,6 +528,100 @@ export default async function CategoryPage({
           hint={category.keyword_intent ?? undefined}
         />
       </MetricRow>
+
+      {ordered.length > 1 && (
+        <Card
+          title="Toutes les langues en une commande"
+          description="Chaque langue reçoit son propre mot-clé mesuré sur son marché, ses propres balises et son propre texte. Rien n'est traduit : un mot-clé allemand n'est pas la traduction du français, il n'a ni le même volume ni la même concurrence."
+        >
+          <AllLocalesRunner categoryId={category.id} etats={etats} />
+        </Card>
+      )}
+
+      {ordered.length > 1 && (
+        <Card
+          title="Vue d'ensemble des langues"
+          description="Où en est chaque marché, sur une seule ligne. Clique une langue pour l'ouvrir."
+        >
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[46rem] text-sm">
+              <thead className="bg-muted/50 text-xs text-muted-foreground">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium">Langue</th>
+                  <th className="px-3 py-2 text-left font-medium">Mot-clé</th>
+                  <th className="px-3 py-2 text-right font-medium">Volume</th>
+                  <th className="px-3 py-2 text-right font-medium">Cible</th>
+                  <th className="px-3 py-2 text-right font-medium">Obtenu</th>
+                  <th className="px-3 py-2 text-right font-medium">Score</th>
+                  <th className="px-3 py-2 text-left font-medium">Statut</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ordered.map((row) => {
+                  const version = derniereParLangue.get(row.locale);
+                  const meta = (version?.payload ?? {}) as { longueur?: number };
+                  const actif = row.locale === locale;
+                  return (
+                    <tr
+                      key={row.locale}
+                      className={`border-t ${actif ? "bg-muted/40" : ""}`}
+                    >
+                      <td className="px-3 py-2">
+                        <Link
+                          href={`/categories/${category.id}?lang=${row.locale}`}
+                          className={`underline-offset-4 hover:underline ${
+                            actif ? "font-medium" : ""
+                          }`}
+                        >
+                          {localeLabel(row.locale)}
+                        </Link>
+                      </td>
+                      <td className="max-w-[16rem] px-3 py-2">
+                        <span className="block truncate text-muted-foreground">
+                          {row.target_keyword ?? "—"}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                        {row.keyword_volume?.toLocaleString("fr-FR") ?? "—"}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                        {row.target_length?.toLocaleString("fr-FR") ?? "—"}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                        {meta.longueur?.toLocaleString("fr-FR") ?? "—"}
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        {version?.score != null ? (
+                          <ScoreBadge score={version.score} />
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-muted-foreground">
+                        {version?.rejection_reason ? (
+                          <span className="text-destructive">refusée</span>
+                        ) : (
+                          {
+                            todo: "À faire",
+                            in_progress: "En cours",
+                            optimized: "Rédigé",
+                            published: "Publié",
+                          }[row.status] ?? row.status
+                        )}
+                        {row.published_at && (
+                          <span className="block text-xs text-muted-foreground/70">
+                            {new Date(row.published_at).toLocaleDateString("fr-FR")}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
 
       {/* ------------------------------------------------- phase 1 ------- */}
 
@@ -914,8 +1037,13 @@ export default async function CategoryPage({
               label="Description LONGUE — bas de page (sans H1)"
               value={latest.content}
             />
-            <div className="border-t border-border pt-4 ">
+            <div className="border-t border-border space-y-4 pt-4 ">
               <ChecksList checks={checksFromPayload(latest.payload)} />
+              <RepairForm
+                categoryId={category.id}
+                locale={locale}
+                version={latest.version}
+              />
             </div>
             <div className="border-t border-border pt-4">
               <RejectForm
@@ -936,6 +1064,58 @@ export default async function CategoryPage({
         </EmptyState>
       )}
 
+      {optimizations.length > 0 && (
+        <Card
+          title={`Toutes les versions en ${marche.label} (${optimizations.length})`}
+          description="Chaque rédaction est archivée, jamais écrasée. L'origine indique quel bouton l'a produite : le traitement en un clic, les deux phases, ou une passe de correction."
+        >
+          <ul className="space-y-2 text-sm">
+            {optimizations.map((optimization) => {
+              const meta = (optimization.payload ?? {}) as {
+                source?: string;
+                longueur?: number;
+              };
+              const courante = optimization.id === latest?.id;
+              return (
+                <li
+                  key={optimization.id}
+                  className={`flex flex-wrap items-center gap-3 rounded-lg px-2 py-1.5 ${
+                    courante ? "bg-muted" : ""
+                  }`}
+                >
+                  <span className="font-medium">v{optimization.version}</span>
+                  {courante && (
+                    <span className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
+                      affichée ci-dessus
+                    </span>
+                  )}
+                  {optimization.score != null && <ScoreBadge score={optimization.score} />}
+                  <span className="text-xs text-muted-foreground">
+                    {meta.source ?? "origine inconnue"}
+                  </span>
+                  {meta.longueur !== undefined && (
+                    <span className="text-xs text-muted-foreground/70 tabular-nums">
+                      {meta.longueur.toLocaleString("fr-FR")} car.
+                    </span>
+                  )}
+                  {optimization.editorial_angle && (
+                    <span className="text-xs text-muted-foreground">
+                      {optimization.editorial_angle}
+                    </span>
+                  )}
+                  {optimization.rejection_reason && (
+                    <span className="text-xs font-medium text-destructive">refusée</span>
+                  )}
+                  <span className="text-xs text-muted-foreground/70">
+                    {new Date(optimization.created_at).toLocaleString("fr-FR")}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </Card>
+      )}
+
       {before && (
         <Card
           title="Audit de la version en ligne"
@@ -945,29 +1125,6 @@ export default async function CategoryPage({
         </Card>
       )}
 
-      {optimizations.length > 1 && (
-        <Card title="Historique">
-          <ul className="space-y-2 text-sm">
-            {optimizations.slice(1).map((optimization) => (
-              <li key={optimization.id} className="flex flex-wrap items-center gap-3">
-                <span className="font-medium">v{optimization.version}</span>
-                {optimization.score != null && <ScoreBadge score={optimization.score} />}
-                {optimization.editorial_angle && (
-                  <span className="text-xs text-muted-foreground">
-                    {optimization.editorial_angle}
-                  </span>
-                )}
-                {optimization.rejection_reason && (
-                  <span className="text-xs text-destructive">refusée</span>
-                )}
-                <span className="text-xs text-muted-foreground/70">
-                  {new Date(optimization.created_at).toLocaleString("fr-FR")}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </Card>
-      )}
 
       <form action={deleteCategory}>
         <input type="hidden" name="category_id" value={category.id} />
