@@ -48,6 +48,7 @@ export const LOCALES: LocaleInfo[] = [
   { code: "hu", label: "Hongrois", locationCode: 2348, languageCode: "hu", country: "Hongrie" },
   { code: "ru", label: "Russe", locationCode: 2643, languageCode: "ru", country: "Russie" },
   { code: "tr", label: "Turc", locationCode: 2792, languageCode: "tr", country: "Turquie" },
+  { code: "ko", label: "Coréen", locationCode: 2410, languageCode: "ko", country: "Corée du Sud" },
   { code: "ja", label: "Japonais", locationCode: 2392, languageCode: "ja", country: "Japon" },
   { code: "zh", label: "Chinois", locationCode: 2156, languageCode: "zh", country: "Chine" },
 ];

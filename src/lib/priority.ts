@@ -86,7 +86,15 @@ export function computePriority(input: PriorityInput): Priority {
   };
 }
 
-/** Profondeur d'une catégorie, en remontant les parents. */
+/**
+ * Profondeur d'une catégorie, en remontant les parents.
+ *
+ * Une mère absente du projet ne compte pas pour un niveau. PrestaShop rattache
+ * ses catégories de tête à une racine technique — « Accueil », identifiant 2 —
+ * qui n'est jamais exportée parce qu'elle n'est pas une page à travailler. La
+ * compter donnait une profondeur de 1 aux cinq catégories de tête d'Opalook, et
+ * aucune n'était donc reconnue comme de premier niveau.
+ */
 export function computeDepth(
   externalId: number | null,
   parentExternalId: number | null,
@@ -97,7 +105,7 @@ export function computeDepth(
   let current = parentExternalId;
   const vus = new Set<number>([externalId]);
 
-  while (current !== null && !vus.has(current)) {
+  while (current !== null && parents.has(current) && !vus.has(current)) {
     vus.add(current);
     depth += 1;
     current = parents.get(current) ?? null;
