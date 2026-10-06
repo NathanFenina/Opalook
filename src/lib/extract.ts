@@ -58,6 +58,39 @@ export class ExtractionError extends Error {
 }
 
 /**
+ * Les domaines sur lesquels le laissez-passer a le droit d'être présenté.
+ *
+ * Cette liste n'est pas une précaution de confort : le jeton est un
+ * laissez-passer qui franchit le pare-feu du client. L'envoyer à un hôte qui ne
+ * l'a pas délivré, c'est le lui donner. Or rien ne garantit qu'une URL de
+ * catégorie pointe vers le site du client — l'import en masse accepte n'importe
+ * quelle URL, et une redirection peut emmener ailleurs.
+ *
+ * Renseigner EXTRACT_BYPASS_HOSTS avec les domaines autorisés, séparés par des
+ * virgules. Sans cette variable, le jeton n'est envoyé nulle part : mieux vaut
+ * un relevé qui échoue qu'un secret qui fuit.
+ */
+function allowedBypassHosts(): string[] {
+  return (process.env.EXTRACT_BYPASS_HOSTS ?? "")
+    .split(",")
+    .map((host) => host.trim().toLowerCase().replace(/^www\./, ""))
+    .filter(Boolean);
+}
+
+/** L'hôte fait-il partie des domaines autorisés, sous-domaines compris ? */
+function isAllowedHost(url: string): boolean {
+  const autorises = allowedBypassHosts();
+  if (autorises.length === 0) return false;
+
+  try {
+    const host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+    return autorises.some((autorise) => host === autorise || host.endsWith(`.${autorise}`));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Laissez-passer pour franchir un pare-feu applicatif.
  *
  * Cloudflare bloque les requêtes serveur d'Opalook en 403, quelle que soit
@@ -66,14 +99,34 @@ export class ExtractionError extends Error {
  * règle WAF qui laisse passer les requêtes portant un en-tête secret — plus
  * fiable qu'une liste d'IP, celles de Vercel étant mouvantes.
  *
- * Renseigner EXTRACT_BYPASS_HEADER et EXTRACT_BYPASS_TOKEN côté serveur, et
- * créer la règle correspondante côté Cloudflare.
+ * Renseigner EXTRACT_BYPASS_HEADER, EXTRACT_BYPASS_TOKEN et EXTRACT_BYPASS_HOSTS
+ * côté serveur, et créer la règle correspondante côté Cloudflare.
+ *
+ * Réserve connue : la redirection est suivie par `fetch`, qui conserve les
+ * en-têtes personnalisés d'un hôte à l'autre. Le contrôle porte donc sur l'URL
+ * demandée, pas sur l'URL finale. Un site autorisé qui redirigerait vers un
+ * tiers lui transmettrait le jeton — risque résiduel, assumé, mais qui suppose
+ * que le site du client redirige lui-même vers l'attaquant.
  */
-function bypassHeader(): Record<string, string> {
+function bypassHeader(url: string): Record<string, string> {
   const name = process.env.EXTRACT_BYPASS_HEADER;
   const token = process.env.EXTRACT_BYPASS_TOKEN;
-  return name && token ? { [name]: token } : {};
+  if (!name || !token || !isAllowedHost(url)) return {};
+  return { [name]: token };
 }
+
+/**
+ * Comment on se présente.
+ *
+ * Deux cas, et la différence est une question d'honnêteté autant que
+ * d'efficacité. Sur un site qui nous a explicitement autorisés, on s'annonce
+ * sous notre vrai nom : le propriétaire doit pouvoir nous reconnaître dans ses
+ * journaux, et un agent de navigateur usurpé depuis une adresse de centre de
+ * données est justement ce que les pare-feux notent le plus mal. Ailleurs, on
+ * se présente comme un navigateur ordinaire, parce qu'on ne fait rien d'autre
+ * que lire une page publique.
+ */
+const TOOL_USER_AGENT = "Opalook-SEO/1.0 (+https://opalook.eu)";
 
 const BROWSER_HEADERS: Record<string, string> = {
   "User-Agent":
@@ -87,6 +140,18 @@ const BROWSER_HEADERS: Record<string, string> = {
   "Sec-Fetch-User": "?1",
   "Upgrade-Insecure-Requests": "1",
 };
+
+/** Les en-têtes de la requête, adaptés au fait qu'on soit autorisé ou non. */
+function requestHeaders(url: string): Record<string, string> {
+  const laissezPasser = bypassHeader(url);
+  const autorise = Object.keys(laissezPasser).length > 0;
+
+  return {
+    ...BROWSER_HEADERS,
+    ...(autorise ? { "User-Agent": TOOL_USER_AGENT } : {}),
+    ...laissezPasser,
+  };
+}
 
 /* ------------------------------------------------------------------ utils */
 
@@ -306,7 +371,7 @@ export async function extractFromUrl(rawUrl: string): Promise<Extraction> {
 
   try {
     const response = await fetch(url, {
-      headers: { ...BROWSER_HEADERS, ...bypassHeader() },
+      headers: requestHeaders(url.href),
       redirect: "follow",
       cache: "no-store",
     });

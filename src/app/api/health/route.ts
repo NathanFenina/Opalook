@@ -63,6 +63,9 @@ export async function GET() {
         describe("FIRECRAWL_API_KEY"),
         describe("EXTRACT_BYPASS_HEADER"),
         describe("EXTRACT_BYPASS_TOKEN"),
+        // Sans elle, le laissez-passer n'est présenté à personne : la voir
+        // absente explique un 403 que les deux autres variables démentiraient.
+        describe("EXTRACT_BYPASS_HOSTS"),
         describe("NEXT_PUBLIC_SUPABASE_URL"),
         describe("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY"),
       ],
