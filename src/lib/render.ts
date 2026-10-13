@@ -2,9 +2,41 @@
  * Rendu du contenu généré en HTML collable dans le champ « description » de
  * PrestaShop. Volontairement pauvre en balises : PrestaShop nettoie l'HTML
  * exotique, et le thème gère déjà la typographie.
+ *
+ * Tout ce qui sort d'ici est publié. Rien n'y est donc écrit en dur dans une
+ * langue : un seul mot oublié — « Questions fréquentes » en tête de la FAQ
+ * turque — et la page entière perd sa crédibilité.
  */
 
 import type { CategoryContent } from "@/lib/generate";
+
+/**
+ * Intertitre de la FAQ, à défaut de celui rendu par le modèle.
+ *
+ * Les versions écrites avant que le champ existe n'en ont pas. Ce repli couvre
+ * les langues du catalogue, et retombe sur le français pour une langue qu'on
+ * n'a pas prévue — un intertitre dans la mauvaise langue reste préférable à un
+ * titre vide au-dessus d'une liste de questions.
+ */
+const FAQ_HEADINGS: Record<string, string> = {
+  fr: "Questions fréquentes",
+  en: "Frequently asked questions",
+  de: "Häufige Fragen",
+  es: "Preguntas frecuentes",
+  it: "Domande frequenti",
+  nl: "Veelgestelde vragen",
+  pt: "Perguntas frequentes",
+  ro: "Întrebări frecvente",
+  tr: "Sıkça sorulan sorular",
+  ko: "자주 묻는 질문",
+};
+
+/** L'intertitre de la FAQ : celui du modèle d'abord, le repli ensuite. */
+function faqHeading(content: CategoryContent, locale?: string): string {
+  const rendu = (content as { faqHeading?: string }).faqHeading?.trim();
+  if (rendu) return rendu;
+  return FAQ_HEADINGS[locale ?? "fr"] ?? FAQ_HEADINGS.fr;
+}
 
 function escapeHtml(value: string): string {
   return value
@@ -23,7 +55,7 @@ function escapeHtml(value: string): string {
  */
 export function renderCategoryHtml(
   content: CategoryContent,
-  options: { includeH1?: boolean } = {},
+  options: { includeH1?: boolean; locale?: string } = {},
 ): string {
   const parts: string[] = [];
 
@@ -44,7 +76,7 @@ export function renderCategoryHtml(
   }
 
   if (content.faq.length > 0) {
-    parts.push("<h2>Questions fréquentes</h2>");
+    parts.push(`<h2>${escapeHtml(faqHeading(content, options.locale))}</h2>`);
     for (const item of content.faq) {
       parts.push(`<h3>${escapeHtml(item.question)}</h3>`);
       parts.push(`<p>${escapeHtml(item.answer)}</p>`);
@@ -78,14 +110,14 @@ export function renderShortDescriptionText(content: CategoryContent): string {
  * structure du barème ne les voit pas et conclut à tort que le texte n'est pas
  * structuré, alors que le HTML rendu contient bien des H2.
  */
-export function renderCategoryText(content: CategoryContent): string {
+export function renderCategoryText(content: CategoryContent, locale?: string): string {
   const parts: string[] = [content.intro];
 
   for (const section of content.sections) {
     parts.push(`## ${section.heading}`, ...section.paragraphs, ...section.bullets);
   }
   if (content.faq.length > 0) {
-    parts.push("## Questions fréquentes");
+    parts.push(`## ${faqHeading(content, locale)}`);
     for (const item of content.faq) {
       parts.push(`### ${item.question}`, item.answer);
     }

@@ -21,6 +21,7 @@
 import { NextResponse } from "next/server";
 
 import { createClient } from "@/lib/supabase/server";
+import { fetchAllRows } from "@/lib/fetch-all";
 import { localeLabel, sortLocales } from "@/lib/locales";
 import { computeDepth, computePriority } from "@/lib/priority";
 
@@ -81,42 +82,47 @@ export async function GET(
     return NextResponse.json({ error: categoriesError.message }, { status: 500 });
   }
 
-  let localesQuery = supabase
-    .from("category_locales")
-    .select("*")
-    .eq("project_id", id);
-  if (wanted && wanted !== "all") localesQuery = localesQuery.eq("locale", wanted);
-
-  const { data: localeRows, error: localesError } = await localesQuery;
+  // Paginé, sans quoi un export « toutes langues » s'arrêterait à mille lignes
+  // et livrerait un fichier amputé sans le signaler — le défaut le plus
+  // dangereux qui soit sur un livrable qu'on recopie en production.
+  const { data: localeRows, error: localesError } = await fetchAllRows((from, to) => {
+    const query = supabase.from("category_locales").select("*").eq("project_id", id);
+    return (wanted && wanted !== "all" ? query.eq("locale", wanted) : query).range(from, to);
+  });
 
   if (localesError) {
     return NextResponse.json(
       {
         error:
-          `${localesError.message} — si la table des langues est absente, joue la ` +
+          `${localesError} — si la table des langues est absente, joue la ` +
           `migration 2026-09-22_multilingue_et_suivi.sql avant d'exporter.`,
       },
       { status: 500 },
     );
   }
 
-  const { data: optimizations, error: optimizationsError } = await supabase
-    .from("optimizations")
-    .select(
-      "category_id, locale, version, score, title, meta_description, h1, short_description, content, editorial_angle, rejection_reason, payload, created_at, categories!inner(project_id)",
-    )
-    .eq("categories.project_id", id)
-    .order("version", { ascending: false });
+  // Paginé aussi : une catégorie par langue et par version, ça dépasse mille
+  // dès que le catalogue est à moitié rédigé.
+  const { data: optimizations, error: optimizationsError } = await fetchAllRows((from, to) =>
+    supabase
+      .from("optimizations")
+      .select(
+        "category_id, locale, version, score, title, meta_description, h1, short_description, content, editorial_angle, rejection_reason, payload, created_at, categories!inner(project_id)",
+      )
+      .eq("categories.project_id", id)
+      .order("version", { ascending: false })
+      .range(from, to),
+  );
 
   if (optimizationsError) {
-    return NextResponse.json({ error: optimizationsError.message }, { status: 500 });
+    return NextResponse.json({ error: optimizationsError }, { status: 500 });
   }
 
   // La dernière version par couple (catégorie, langue) : c'est celle qu'on
   // publie. L'historique reste en base, il n'a rien à faire dans un export
   // destiné à être recopié.
   const latest = new Map<string, (typeof optimizations)[number]>();
-  for (const row of optimizations ?? []) {
+  for (const row of optimizations) {
     const key = `${row.category_id}|${row.locale}`;
     if (!latest.has(key)) latest.set(key, row);
   }

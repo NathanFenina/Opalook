@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/server";
+import { fetchAllRows } from "@/lib/fetch-all";
 import { computeDepth, computePriority } from "@/lib/priority";
 import { DEFAULT_LOCALE, localeLabel, sortLocales } from "@/lib/locales";
 import { Card, EmptyState, Field } from "@/components/app-ui";
@@ -115,12 +116,17 @@ export default async function ProjectPage({
 
   /* --- les langues ------------------------------------------------------- */
 
-  const { data: localeData, error: localeError } = await supabase
-    .from("category_locales")
-    .select(
-      "category_id, locale, name, target_keyword, keyword_volume, keyword_difficulty, target_length, metadata_approved, status, published_at",
-    )
-    .eq("project_id", id);
+  // Paginé : 188 catégories en dix langues font 1 880 lignes, et une requête
+  // simple s'arrête à mille sans le dire.
+  const { data: localeData, error: localeError } = await fetchAllRows((from, to) =>
+    supabase
+      .from("category_locales")
+      .select(
+        "category_id, locale, name, target_keyword, keyword_volume, keyword_difficulty, target_length, metadata_approved, status, published_at",
+      )
+      .eq("project_id", id)
+      .range(from, to),
+  );
 
   const localeRows = (localeData ?? []) as unknown as LocaleRow[];
   const availableLocales = sortLocales([
@@ -230,7 +236,7 @@ export default async function ProjectPage({
           Joue <code>supabase/migrations/2026-09-22_multilingue_et_suivi.sql</code> dans le SQL
           Editor de Supabase, puis <code>2026-09-22b_numerotation_par_langue.sql</code> dans
           une seconde exécution, puis réimporte le catalogue ci-dessous : c&apos;est
-          l&apos;import qui crée les lignes des dix langues. ({localeError.message})
+          l&apos;import qui crée les lignes des dix langues. ({localeError})
         </p>
       )}
 

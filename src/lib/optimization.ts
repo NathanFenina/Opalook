@@ -283,8 +283,8 @@ export async function persistOptimization(
 
   const shortHtml = renderShortDescriptionHtml(content);
   const shortText = renderShortDescriptionText(content);
-  const longHtml = renderCategoryHtml(content);
-  const longText = renderCategoryText(content);
+  const longHtml = renderCategoryHtml(content, { locale: args.locale });
+  const longText = renderCategoryText(content, args.locale);
 
   const { checks, score } = audit(
     {

@@ -142,6 +142,14 @@ export const CategoryContentSchema = z.object({
         "pages réellement classées. À défaut, viser 4 000 à 7 000 caractères",
     ),
   faq: z.array(FaqItemSchema).describe("2 à 4 questions fréquentes à intention transactionnelle"),
+  faqHeading: z
+    .string()
+    .describe(
+      "L'intertitre qui annonce la FAQ, DANS LA LANGUE DU LIVRABLE — « Questions " +
+        "fréquentes » en français, « Häufige Fragen » en allemand, etc. Il est " +
+        "publié tel quel sur la page : le laisser en français sur une page " +
+        "allemande se voit immédiatement",
+    ),
   editorialAngle: z.string().describe("L'angle éditorial retenu, repris de la liste imposée"),
   keywordVariants: z
     .array(z.string())
